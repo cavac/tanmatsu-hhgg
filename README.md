@@ -1,8 +1,6 @@
-# Tanmatsu "Ballz demo" project
+# Tanmatsu "The Cube" demo project
 
-This minimal demo shows how to build an app for Tanmatsu using the [PAX graphics](https://github.com/robotman2412/pax-graphics/tree/release/1.1.1/docs) library.
-
-It is based in the [Template app](https://github.com/Nicolai-Electronics/tanmatsu-template)
+This renders a 3D cube loosely based on the [tinyrenderer](https://haqr.eu/tinyrenderer/) project.
 
 ## License
 
