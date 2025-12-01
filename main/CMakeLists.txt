@@ -1,16 +1,10 @@
 idf_component_register(
 	SRCS
-		"main.cpp"
-        "graphics.cpp"
-        "model.cpp"
-        "renderer.cpp"
-        "tgaimage.cpp"
+		"main.c"
+		"renderer.c"
 	PRIV_REQUIRES
 		esp_lcd
-		fatfs
-		nvs_flash
 		badge-bsp
-		tanmatsu-wifi
 	INCLUDE_DIRS
 		"."
 )
