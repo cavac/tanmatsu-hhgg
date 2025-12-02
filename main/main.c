@@ -25,7 +25,7 @@
 #include "renderer.h"
 #include "usb_device.h"
 
-#define CAVAC_DEBUG
+//#define CAVAC_DEBUG
 
 #ifdef CAVAC_DEBUG
 #include "sdcard.h"

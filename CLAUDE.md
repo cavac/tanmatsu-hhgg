@@ -50,7 +50,7 @@ Note: SD card must be inserted for screenshots to work. Disabling debug mode red
 The renderer implements:
 - 4x4 matrix transformations (lookat, perspective, viewport, rotation)
 - Cube rotation on X, Y, Z axes at different speeds (fixed camera/light)
-- Incremental attribute interpolation for UV and depth (fixed-point, no per-pixel floats)
+- Span-based rasterization with incremental float attribute interpolation
 - Texture mapping with nearest-neighbor sampling
 - Z-buffer depth testing (16-bit with z-clamping to prevent overflow)
 - Diffuse lighting (modulates texture color)
@@ -100,19 +100,24 @@ The following ESP-IDF settings are enabled in `sdkconfigs/tanmatsu`:
 - `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` - Quad I/O flash mode (nearly 2x flash read speed)
 - `CONFIG_SPIRAM_SPEED_200M=y` - Fast PSRAM access for z-buffer
 
-### PIE SIMD Investigation
+### Hardware Acceleration Investigation
 
-ESP32-P4's PIE (Processor Instruction Extensions) was investigated for SIMD acceleration. Key findings:
+**PIE SIMD** (Processor Instruction Extensions):
 - PIE provides 128-bit vector registers (q0-q7) for 8x int16 operations
 - Instructions: `esp.vld.128.ip` (load), `esp.vst.128.ip` (store), `esp.vadd.s16` (add)
 - **Result**: PIE for z-buffer load/store was slower (~24 fps) than scalar code (~25 fps)
-- **Reason**: The overhead of copying to/from aligned local buffers outweighs the SIMD benefit. The true bottleneck is texture sampling and pixel writes, which can't easily be vectorized due to per-pixel array indexing.
+- **Reason**: Overhead of copying to/from aligned local buffers exceeds SIMD benefit. The true bottleneck is texture sampling and pixel writes, which can't be vectorized due to per-pixel array indexing.
+
+**PPA** (Pixel Processing Accelerator):
+- PPA supports: Scale, Rotate, Mirror (SRM), Alpha Blend, and Fill operations on rectangular image blocks
+- **Result**: Not applicable to software triangle rasterization
+- **Reason**: PPA operates on rectangular blocks with uniform transforms. Our texture mapping requires per-pixel UV lookups (arbitrary warp), triangles aren't rectangular, and PPA has no depth testing. PPA is designed for scaling camera frames or compositing UI layers, not 3D rendering.
 
 ### Future Optimization Opportunities
 
-- **PPA (Pixel Processing Accelerator)**: ESP32-P4's hardware pixel processor could potentially accelerate texture sampling or color blending.
-- **Texture cache optimization**: Smaller textures or tiled textures might improve cache locality.
-- **Reduced precision**: Using int8 colors throughout might enable better SIMD usage.
+- **Smaller render resolution**: Render at 240×240, use PPA to scale up to 480×480
+- **Texture in internal SRAM**: Move 12KB texture from flash to fast internal memory
+- **Lower color depth**: RGB565 instead of RGB888 (fewer bytes per pixel write)
 
 ## Memory Considerations
 
