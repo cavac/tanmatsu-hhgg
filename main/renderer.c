@@ -26,6 +26,16 @@ static const char* TAG = "renderer";
 // Fixed-point scale (16.16 format)
 #define FP_SHIFT 16
 #define FP_ONE (1 << FP_SHIFT)
+#define FP_HALF (1 << (FP_SHIFT - 1))
+
+// Convert float to fixed-point
+#define FLOAT_TO_FP(f) ((int32_t)((f) * FP_ONE))
+
+// Convert fixed-point to int (truncate)
+#define FP_TO_INT(fp) ((fp) >> FP_SHIFT)
+
+// Fixed-point multiply (64-bit intermediate to avoid overflow)
+#define FP_MUL(a, b) ((int32_t)(((int64_t)(a) * (int64_t)(b)) >> FP_SHIFT))
 
 // 3D Vector types
 typedef struct { float x, y, z; } vec3f;
@@ -93,7 +103,7 @@ static int current_stride = 0;
 
 // Job data for parallel rasterization (single triangle)
 typedef struct {
-    vec2f screen[3];       // Screen coordinates
+    vec2f screen[3];       // Screen coordinates (float, for setup)
     vec2f uv[3];           // Texture coordinates
     float ndc_z[3];        // NDC z values for depth interpolation
     float inv_det;         // 1/det for barycentric normalization
@@ -101,6 +111,12 @@ typedef struct {
     int16_t xmin, xmax;    // Bounding box
     int16_t ymin, ymax;
     bool valid;            // Whether this triangle passed culling
+
+    // Integer edge function coefficients for incremental evaluation
+    // E(x,y) = A*x + B*y + C, E(x+1,y) = E(x,y) + A
+    int32_t edge_a[3];     // A coefficient: -(y[j] - y[i]) as integer
+    int32_t edge_b[3];     // B coefficient: (x[j] - x[i]) as integer
+    int32_t edge_c[3];     // C coefficient: x[i]*y[j] - x[j]*y[i] as integer
 } RasterJob;
 
 // Frame job - contains all triangles for the frame
@@ -253,16 +269,21 @@ static inline void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     }
 }
 
-// Small negative epsilon for edge test to handle floating-point rounding
-#define EDGE_EPSILON -0.001f
+// Small negative epsilon for edge test (integer, ~1 pixel tolerance)
+#define EDGE_EPSILON_INT (-1)
 
 // Rasterize a portion of a triangle (columns from x_start to x_end)
+// Uses incremental integer edge evaluation for speed
 static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
-    const vec2f* screen = job->screen;
     const vec2f* uv = job->uv;
     const float* ndc_z = job->ndc_z;
     const float inv_det = job->inv_det;
     const int intensity = job->intensity;
+
+    // Get integer edge coefficients
+    const int32_t a0 = job->edge_a[0], b0 = job->edge_b[0], c0 = job->edge_c[0];
+    const int32_t a1 = job->edge_a[1], b1 = job->edge_b[1], c1 = job->edge_c[1];
+    const int32_t a2 = job->edge_a[2], b2 = job->edge_b[2], c2 = job->edge_c[2];
 
     // Clamp x range to triangle bounding box
     int xmin = (x_start > job->xmin) ? x_start : job->xmin;
@@ -271,26 +292,21 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
     if (xmin > xmax) return;
 
     for (int y = job->ymin; y <= job->ymax; y++) {
-        float py = (float)y;
         int zidx_base = y * WIDTH;
 
+        // Compute edge functions at start of scanline (xmin, y)
+        // E(x,y) = A*x + B*y + C
+        int32_t w0 = a0 * xmin + b0 * y + c0;
+        int32_t w1 = a1 * xmin + b1 * y + c1;
+        int32_t w2 = a2 * xmin + b2 * y + c2;
+
         for (int x = xmin; x <= xmax; x++) {
-            float px = (float)x;
-
-            // Compute barycentric coordinates using edge functions
-            float w0 = (screen[1].x - screen[0].x) * (py - screen[0].y) -
-                       (screen[1].y - screen[0].y) * (px - screen[0].x);
-            float w1 = (screen[2].x - screen[1].x) * (py - screen[1].y) -
-                       (screen[2].y - screen[1].y) * (px - screen[1].x);
-            float w2 = (screen[0].x - screen[2].x) * (py - screen[2].y) -
-                       (screen[0].y - screen[2].y) * (px - screen[2].x);
-
-            // Check if inside triangle
-            if (w0 >= EDGE_EPSILON && w1 >= EDGE_EPSILON && w2 >= EDGE_EPSILON) {
-                // Compute barycentric coordinates
-                float bc0 = w1 * inv_det;
-                float bc1 = w2 * inv_det;
-                float bc2 = w0 * inv_det;
+            // Check if inside triangle (all edge functions >= 0)
+            if (w0 >= EDGE_EPSILON_INT && w1 >= EDGE_EPSILON_INT && w2 >= EDGE_EPSILON_INT) {
+                // Compute barycentric coordinates (convert to float for precision)
+                float bc0 = (float)w1 * inv_det;
+                float bc1 = (float)w2 * inv_det;
+                float bc2 = (float)w0 * inv_det;
 
                 // Normalize to ensure bc0 + bc1 + bc2 = 1 (prevents z extrapolation errors)
                 float bc_sum = bc0 + bc1 + bc2;
@@ -336,6 +352,11 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
                     set_pixel(x, y, (uint8_t)r, (uint8_t)g, (uint8_t)b);
                 }
             }
+
+            // Increment edge functions for next pixel: E(x+1, y) = E(x, y) + A
+            w0 += a0;
+            w1 += a1;
+            w2 += a2;
         }
     }
 }
@@ -416,7 +437,7 @@ static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, i
     if (xmax >= WIDTH) xmax = WIDTH - 1;
     if (ymax >= HEIGHT) ymax = HEIGHT - 1;
 
-    // Store screen coordinates and UVs
+    // Store screen coordinates and UVs (float versions for compatibility)
     for (int i = 0; i < 3; i++) {
         job->screen[i] = screen[i];
         job->ndc_z[i] = ndc[i].z;
@@ -431,18 +452,36 @@ static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, i
     job->ymax = (int16_t)ymax;
     job->valid = true;
 
+    // Compute integer edge coefficients for incremental evaluation
+    // Edge function: E(x,y) = (x[j]-x[i])*(y-y[i]) - (y[j]-y[i])*(x-x[i])
+    // Expanded: E = A*x + B*y + C where A = -(y[j]-y[i]), B = (x[j]-x[i]), C = x[i]*y[j] - x[j]*y[i]
+    // Using rounded integer screen coordinates for edge tests
+    int32_t sx[3], sy[3];
+    for (int i = 0; i < 3; i++) {
+        sx[i] = (int32_t)(screen[i].x + 0.5f);  // Round to nearest
+        sy[i] = (int32_t)(screen[i].y + 0.5f);
+    }
+
+    for (int i = 0; i < 3; i++) {
+        int j = (i + 1) % 3;
+        job->edge_a[i] = sy[i] - sy[j];                    // A = -(y[j] - y[i])
+        job->edge_b[i] = sx[j] - sx[i];                    // B = x[j] - x[i]
+        job->edge_c[i] = sx[i] * sy[j] - sx[j] * sy[i];    // C = x[i]*y[j] - x[j]*y[i]
+    }
+
     return true;
 }
 
 void renderer_init(void) {
     // Allocate z-buffer from PSRAM to save internal RAM
     // Using int16_t instead of float for faster comparisons (half the memory too)
+    // Align to 16 bytes for PIE SIMD access
     if (zbuffer == NULL) {
-        zbuffer = (int16_t*)heap_caps_malloc(WIDTH * HEIGHT * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+        zbuffer = (int16_t*)heap_caps_aligned_alloc(16, WIDTH * HEIGHT * sizeof(int16_t), MALLOC_CAP_SPIRAM);
         if (zbuffer == NULL) {
-            zbuffer = (int16_t*)malloc(WIDTH * HEIGHT * sizeof(int16_t));
+            zbuffer = (int16_t*)aligned_alloc(16, WIDTH * HEIGHT * sizeof(int16_t));
         }
-        ESP_LOGI(TAG, "Z-buffer: %d KB (int16)", (int)(WIDTH * HEIGHT * sizeof(int16_t) / 1024));
+        ESP_LOGI(TAG, "Z-buffer: %d KB (int16, 16-byte aligned)", (int)(WIDTH * HEIGHT * sizeof(int16_t) / 1024));
     }
 
     // Create semaphores for parallel rendering

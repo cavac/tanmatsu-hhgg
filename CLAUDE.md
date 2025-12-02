@@ -60,7 +60,7 @@ Cube is rendered at 480x480 pixels, centered on the 800x480 display with black b
 
 ### Z-Buffer Implementation
 
-The z-buffer uses 16-bit integers for faster comparisons and lower memory usage. NDC z-values are clamped to [-1, 1] before scaling to prevent integer overflow, which was causing rendering artifacts near corners close to the camera.
+The z-buffer uses 16-bit integers for faster comparisons and lower memory usage. NDC z-values are clamped to [-1, 1] before scaling to prevent integer overflow, which was causing rendering artifacts near corners close to the camera. Buffer is 16-byte aligned for potential SIMD access.
 
 ### Dual-Core Parallelization
 
@@ -82,10 +82,23 @@ Typical frame timing (~19 fps):
 - After dual-core parallelization: ~16 fps
 - After 16-bit z-buffer optimization: ~19 fps
 
+### Build Optimizations
+
+The following ESP-IDF settings are enabled in `sdkconfigs/tanmatsu`:
+- `CONFIG_COMPILER_OPTIMIZATION_PERF=y` - Compiler optimization for performance (-O2)
+- `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` - Quad I/O flash mode (nearly 2x flash read speed)
+- `CONFIG_SPIRAM_SPEED_200M=y` - Fast PSRAM access for z-buffer
+
+### Future Optimization Opportunities
+
+- **Fixed-point rasterization**: Converting float math to fixed-point could improve performance, but requires careful handling of overflow (screen coordinates * fixed-point scale can exceed int32 range). Would need 64-bit intermediates or reduced precision.
+- **PIE SIMD instructions**: ESP32-P4's PIE extension could accelerate z-buffer operations with 128-bit vector instructions (8x int16 per operation). Requires inline assembly.
+- **Scanline-based rendering**: Process pixels in groups of 8 for SIMD-friendly memory access patterns.
+
 ## Memory Considerations
 
 This project is tight on internal SRAM. Large buffers must be allocated from PSRAM:
-- `zbuffer` (460KB) - int16_t array for depth testing, allocated via heap_caps_malloc(..., MALLOC_CAP_SPIRAM)
+- `zbuffer` (460KB) - int16_t array for depth testing, allocated via heap_caps_aligned_alloc (16-byte aligned for SIMD)
 - `texture_data` (12KB) - 64x64 RGB texture embedded in flash
 
 The renderer writes directly to the PAX graphics library framebuffer with stride support, eliminating the need for an intermediate render buffer.
