@@ -72,8 +72,8 @@ Synchronization uses FreeRTOS binary semaphores with frame-level sync (one sync 
 
 ## Performance
 
-Typical frame timing (~23 fps):
-- Render: ~42ms (dual-core rasterization)
+Typical frame timing (~25 fps):
+- Render: ~39ms (dual-core rasterization)
 - Blit: ~0.5ms (DMA to display)
 
 ### Optimization History
@@ -83,12 +83,11 @@ Typical frame timing (~23 fps):
 - After 16-bit z-buffer optimization: ~19 fps
 - After incremental integer edge evaluation: ~18 fps
 - After incremental attribute interpolation: ~23 fps
+- After span-based rasterization: ~25 fps
 
 ### Rasterization Optimizations
 
-The inner loop uses a hybrid integer/float approach:
-
-**Incremental Edge Evaluation (Integer)**: Edge functions are computed once at the start of each scanline using integer arithmetic, then incremented per pixel (w += a) instead of full evaluation. This provides fast inside/outside triangle testing.
+**Span-Based Rasterization**: Instead of testing every pixel against edge functions, analytically compute where each edge crosses the current scanline. The intersection of all three half-planes gives the exact span [left, right] where pixels are inside the triangle. The inner loop processes this span without any per-pixel edge tests.
 
 **Incremental Attribute Interpolation (Float)**: Z-depth and UV coordinates use precomputed dx/dy gradients per triangle. At each scanline start, initial values are computed, then incremented per pixel. Float is used to avoid fixed-point overflow issues with large screen coordinates.
 
@@ -101,11 +100,19 @@ The following ESP-IDF settings are enabled in `sdkconfigs/tanmatsu`:
 - `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` - Quad I/O flash mode (nearly 2x flash read speed)
 - `CONFIG_SPIRAM_SPEED_200M=y` - Fast PSRAM access for z-buffer
 
+### PIE SIMD Investigation
+
+ESP32-P4's PIE (Processor Instruction Extensions) was investigated for SIMD acceleration. Key findings:
+- PIE provides 128-bit vector registers (q0-q7) for 8x int16 operations
+- Instructions: `esp.vld.128.ip` (load), `esp.vst.128.ip` (store), `esp.vadd.s16` (add)
+- **Result**: PIE for z-buffer load/store was slower (~24 fps) than scalar code (~25 fps)
+- **Reason**: The overhead of copying to/from aligned local buffers outweighs the SIMD benefit. The true bottleneck is texture sampling and pixel writes, which can't easily be vectorized due to per-pixel array indexing.
+
 ### Future Optimization Opportunities
 
-- **PIE SIMD instructions**: ESP32-P4's PIE extension could accelerate z-buffer comparisons and pixel writes with 128-bit vector instructions (8x int16 per operation). Requires inline assembly.
-- **SIMD attribute interpolation**: Process 4 or 8 pixels at once using PIE vector operations for edge tests and attribute increments.
 - **PPA (Pixel Processing Accelerator)**: ESP32-P4's hardware pixel processor could potentially accelerate texture sampling or color blending.
+- **Texture cache optimization**: Smaller textures or tiled textures might improve cache locality.
+- **Reduced precision**: Using int8 colors throughout might enable better SIMD usage.
 
 ## Memory Considerations
 
