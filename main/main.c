@@ -216,19 +216,20 @@ void app_main(void) {
     while(1) {
         bsp_input_event_t event;
         if (xQueueReceive(input_event_queue, &event, delay) == pdTRUE) {
-            // Only use KEYBOARD events for screenshot (fires once on key press)
+            // KEYBOARD events for screenshot (fires once per character)
             if (event.type == INPUT_EVENT_TYPE_KEYBOARD) {
                 if (event.args_keyboard.ascii == ' ') {
                     save_screenshot();
-                } else if (event.args_keyboard.ascii == 27) {
-                    // ESC returns to launcher
+                }
+            } else if (event.type == INPUT_EVENT_TYPE_SCANCODE) {
+                // ESC via scancode returns to launcher
+                if (event.args_scancode.scancode == BSP_INPUT_SCANCODE_ESC) {
                     bsp_device_restart_to_launcher();
                 }
             } else if (event.type == INPUT_EVENT_TYPE_ACTION) {
                 // Action events (like power button) return to launcher
                 bsp_device_restart_to_launcher();
             }
-            // Ignore SCANCODE and NAVIGATION events
         }
 
         int64_t t_start, t_end;
