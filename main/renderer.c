@@ -279,8 +279,16 @@ static inline void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
 // Small negative epsilon for edge test (integer, ~1 pixel tolerance)
 #define EDGE_EPSILON_INT (-1)
 
+// Helper: compute x where edge function crosses zero for given y
+// Edge: a*x + b*y + c = 0  =>  x = -(b*y + c) / a
+static inline int edge_x_crossing(int32_t a, int32_t b, int32_t c, int y) {
+    if (a == 0) return (b * y + c >= 0) ? -1000000 : 1000000;  // Horizontal edge
+    int64_t num = -((int64_t)b * y + c);
+    return (int)(num / a);
+}
+
 // Rasterize a portion of a triangle (columns from x_start to x_end)
-// Uses incremental edge evaluation and float attribute interpolation
+// Uses span-based optimization: finds exact bounds per scanline, no per-pixel edge tests
 static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
     const int intensity = job->intensity;
 
@@ -295,64 +303,100 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
     const float v_dx = job->v_dx, v_dy = job->v_dy, v_c = job->v_c;
 
     // Clamp x range to triangle bounding box
-    int xmin = (x_start > job->xmin) ? x_start : job->xmin;
-    int xmax = (x_end < job->xmax) ? x_end : job->xmax;
+    int xmin_bounds = (x_start > job->xmin) ? x_start : job->xmin;
+    int xmax_bounds = (x_end < job->xmax) ? x_end : job->xmax;
 
-    if (xmin > xmax) return;
+    if (xmin_bounds > xmax_bounds) return;
 
     for (int y = job->ymin; y <= job->ymax; y++) {
+        // Compute span bounds analytically from edge crossings
+        // For each edge: if a > 0, edge limits from left; if a < 0, limits from right
+        int span_left = xmin_bounds;
+        int span_right = xmax_bounds;
+
+        // Edge 0
+        if (a0 > 0) {
+            int x_cross = edge_x_crossing(a0, b0, c0, y);
+            if (x_cross > span_left) span_left = x_cross;
+        } else if (a0 < 0) {
+            int x_cross = edge_x_crossing(a0, b0, c0, y);
+            if (x_cross < span_right) span_right = x_cross;
+        } else {
+            // a0 == 0: horizontal edge, check if y is valid
+            if (b0 * y + c0 < EDGE_EPSILON_INT) continue;  // Outside
+        }
+
+        // Edge 1
+        if (a1 > 0) {
+            int x_cross = edge_x_crossing(a1, b1, c1, y);
+            if (x_cross > span_left) span_left = x_cross;
+        } else if (a1 < 0) {
+            int x_cross = edge_x_crossing(a1, b1, c1, y);
+            if (x_cross < span_right) span_right = x_cross;
+        } else {
+            if (b1 * y + c1 < EDGE_EPSILON_INT) continue;
+        }
+
+        // Edge 2
+        if (a2 > 0) {
+            int x_cross = edge_x_crossing(a2, b2, c2, y);
+            if (x_cross > span_left) span_left = x_cross;
+        } else if (a2 < 0) {
+            int x_cross = edge_x_crossing(a2, b2, c2, y);
+            if (x_cross < span_right) span_right = x_cross;
+        } else {
+            if (b2 * y + c2 < EDGE_EPSILON_INT) continue;
+        }
+
+        // Clamp to bounds
+        if (span_left < xmin_bounds) span_left = xmin_bounds;
+        if (span_right > xmax_bounds) span_right = xmax_bounds;
+
+        if (span_left > span_right) continue;  // No pixels on this scanline
+
+        // Get row pointers
         int16_t* zbuf_row = zbuffer + y * WIDTH;
         uint8_t* fb_row = current_framebuffer + y * current_stride;
 
-        // Compute edge functions at start of scanline (xmin, y)
-        int32_t w0 = a0 * xmin + b0 * y + c0;
-        int32_t w1 = a1 * xmin + b1 * y + c1;
-        int32_t w2 = a2 * xmin + b2 * y + c2;
+        // Compute attributes at span start
+        float z_row = z_dx * span_left + z_dy * y + z_c;
+        float u_row = u_dx * span_left + u_dy * y + u_c;
+        float v_row = v_dx * span_left + v_dy * y + v_c;
 
-        // Compute attributes at start of scanline (float)
-        float z_row = z_dx * xmin + z_dy * y + z_c;
-        float u_row = u_dx * xmin + u_dy * y + u_c;
-        float v_row = v_dx * xmin + v_dy * y + v_c;
+        // Process span - no edge tests needed!
+        for (int x = span_left; x <= span_right; x++) {
+            // Clamp z to int16 range
+            int16_t z16;
+            if (z_row < -32767.0f) z16 = -32767;
+            else if (z_row > 32767.0f) z16 = 32767;
+            else z16 = (int16_t)z_row;
 
-        for (int x = xmin; x <= xmax; x++) {
-            // Check if inside triangle (all edge functions >= 0)
-            if (w0 >= EDGE_EPSILON_INT && w1 >= EDGE_EPSILON_INT && w2 >= EDGE_EPSILON_INT) {
-                // Clamp z to int16 range
-                int16_t z16;
-                if (z_row < -32767.0f) z16 = -32767;
-                else if (z_row > 32767.0f) z16 = 32767;
-                else z16 = (int16_t)z_row;
+            // Z-buffer test
+            if (z16 >= zbuf_row[x]) {
+                zbuf_row[x] = z16;
 
-                // Z-buffer test
-                if (z16 >= zbuf_row[x]) {
-                    zbuf_row[x] = z16;
+                // Sample texture (u/v are pre-multiplied by texture size)
+                int tx = ((int)u_row) & (TEX_WIDTH - 1);
+                int ty = ((int)v_row) & (TEX_HEIGHT - 1);
 
-                    // Sample texture (u/v are pre-multiplied by texture size)
-                    int tx = ((int)u_row) & (TEX_WIDTH - 1);
-                    int ty = ((int)v_row) & (TEX_HEIGHT - 1);
+                int tidx = ty * (TEX_WIDTH * 3) + tx * 3;
+                int r = texture_data[tidx + 0];
+                int g = texture_data[tidx + 1];
+                int b = texture_data[tidx + 2];
 
-                    int tidx = ty * (TEX_WIDTH * 3) + tx * 3;
-                    int r = texture_data[tidx + 0];
-                    int g = texture_data[tidx + 1];
-                    int b = texture_data[tidx + 2];
+                // Apply lighting
+                r = (r * intensity) >> 8;
+                g = (g * intensity) >> 8;
+                b = (b * intensity) >> 8;
 
-                    // Apply lighting
-                    r = (r * intensity) >> 8;
-                    g = (g * intensity) >> 8;
-                    b = (b * intensity) >> 8;
-
-                    // Write pixel directly (BGR order)
-                    int pidx = x * 3;
-                    fb_row[pidx + 0] = (uint8_t)b;
-                    fb_row[pidx + 1] = (uint8_t)g;
-                    fb_row[pidx + 2] = (uint8_t)r;
-                }
+                // Write pixel directly (BGR order)
+                int pidx = x * 3;
+                fb_row[pidx + 0] = (uint8_t)b;
+                fb_row[pidx + 1] = (uint8_t)g;
+                fb_row[pidx + 2] = (uint8_t)r;
             }
 
-            // Increment edge functions (integer) and attributes (float)
-            w0 += a0;
-            w1 += a1;
-            w2 += a2;
+            // Increment attributes (no edge increments needed!)
             z_row += z_dx;
             u_row += u_dx;
             v_row += v_dx;
