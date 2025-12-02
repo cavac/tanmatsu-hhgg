@@ -207,6 +207,42 @@ static void setup_viewport(int x, int y, int w, int h) {
     Viewport.m[1][3] = y + h / 2.0f;
 }
 
+// Rotation matrix around X axis
+static mat4f mat4f_rotate_x(float angle) {
+    mat4f m = mat4f_identity();
+    float c = cosf(angle);
+    float s = sinf(angle);
+    m.m[1][1] = c;
+    m.m[1][2] = -s;
+    m.m[2][1] = s;
+    m.m[2][2] = c;
+    return m;
+}
+
+// Rotation matrix around Y axis
+static mat4f mat4f_rotate_y(float angle) {
+    mat4f m = mat4f_identity();
+    float c = cosf(angle);
+    float s = sinf(angle);
+    m.m[0][0] = c;
+    m.m[0][2] = s;
+    m.m[2][0] = -s;
+    m.m[2][2] = c;
+    return m;
+}
+
+// Rotation matrix around Z axis
+static mat4f mat4f_rotate_z(float angle) {
+    mat4f m = mat4f_identity();
+    float c = cosf(angle);
+    float s = sinf(angle);
+    m.m[0][0] = c;
+    m.m[0][1] = -s;
+    m.m[1][0] = s;
+    m.m[1][1] = c;
+    return m;
+}
+
 // Set pixel in framebuffer (BGR888 byte order) using current_stride
 static inline void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) {
@@ -455,27 +491,25 @@ void renderer_render_frame(unsigned char* framebuffer, int stride, int frame_num
     // This sets each int16_t to 0x8080 = -32640, close enough to minimum
     memset(zbuffer, 0x80, WIDTH * HEIGHT * sizeof(int16_t));
 
-    // Animate camera position
-    float t = (float)frame_number;
-    float cx = sinf(t / 20.0f) * 2.0f;
-    float cy = sinf(t / 15.0f) * 1.5f;
-    float cz = 3.0f + sinf(t / 40.0f) * 0.5f;
-
-    // Animate light position
-    /*
-    float lx = cosf(t / 20.0f) * 2.0f;
-    float ly = 2.0f + cosf(t / 15.0f) * 1.0f;
-    float lz = cosf(t / 40.0f) * 2.0f;
-    */
-    float tt = 20.0;
-    float lx = cosf(tt / 20.0f) * 2.0f;
-    float ly = 2.0f + cosf(tt / 15.0f) * 1.0f;
-    float lz = cosf(tt / 40.0f) * 2.0f;
-
-    vec3f eye = {cx, cy, cz};
+    // Fixed camera position
+    vec3f eye = {0.0f, 0.0f, 3.0f};
     vec3f center = {0.0f, 0.0f, 0.0f};
     vec3f up = {0.0f, 1.0f, 0.0f};
-    vec3f light = {lx, ly, lz};
+
+    // Fixed light position (upper right, slightly in front)
+    vec3f light = {2.0f, 2.0f, 2.0f};
+
+    // Cube rotation angles (different speeds for each axis)
+    float t = (float)frame_number;
+    float angle_x = t / 47.0f;   // Slow X rotation
+    float angle_y = t / 23.0f;   // Medium Y rotation
+    float angle_z = t / 67.0f;   // Very slow Z rotation
+
+    // Build cube rotation matrix (apply in order: Z, Y, X)
+    mat4f rot_x = mat4f_rotate_x(angle_x);
+    mat4f rot_y = mat4f_rotate_y(angle_y);
+    mat4f rot_z = mat4f_rotate_z(angle_z);
+    mat4f cube_rotation = mat4f_mul(rot_x, mat4f_mul(rot_y, rot_z));
 
     // Setup transformation matrices
     setup_lookat(eye, center, up);
@@ -500,9 +534,12 @@ void renderer_render_frame(unsigned char* framebuffer, int stride, int frame_num
             int vi = cube_faces[f][v];
             vec3f vert = cube_verts[vi];
 
-            // Transform to eye space
+            // Apply cube rotation first (model space)
             vec4f v4 = {vert.x, vert.y, vert.z, 1.0f};
-            vec4f eye_pos = mat4f_mul_vec4(ModelView, v4);
+            vec4f rotated = mat4f_mul_vec4(cube_rotation, v4);
+
+            // Transform to eye space
+            vec4f eye_pos = mat4f_mul_vec4(ModelView, rotated);
             tri_eye[v] = (vec3f){eye_pos.x, eye_pos.y, eye_pos.z};
 
             // Transform to clip space
