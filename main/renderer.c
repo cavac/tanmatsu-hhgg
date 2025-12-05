@@ -94,6 +94,10 @@ static mat4f Viewport;
 static int16_t* zbuffer = NULL;
 #define Z_SCALE 32767.0f
 
+// Texture copy in internal SRAM for faster access (flash is slower)
+static uint8_t* texture_sram = NULL;
+#define TEXTURE_SIZE (TEX_WIDTH * TEX_HEIGHT * 3)
+
 // Current framebuffer pointer and stride (set per frame)
 static uint8_t* current_framebuffer = NULL;
 static int current_stride = 0;
@@ -375,14 +379,14 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
             if (z16 >= zbuf_row[x]) {
                 zbuf_row[x] = z16;
 
-                // Sample texture (u/v are pre-multiplied by texture size)
+                // Sample texture from SRAM (u/v are pre-multiplied by texture size)
                 int tx = ((int)u_row) & (TEX_WIDTH - 1);
                 int ty = ((int)v_row) & (TEX_HEIGHT - 1);
 
                 int tidx = ty * (TEX_WIDTH * 3) + tx * 3;
-                int r = texture_data[tidx + 0];
-                int g = texture_data[tidx + 1];
-                int b = texture_data[tidx + 2];
+                int r = texture_sram[tidx + 0];
+                int g = texture_sram[tidx + 1];
+                int b = texture_sram[tidx + 2];
 
                 // Apply lighting
                 r = (r * intensity) >> 8;
@@ -552,6 +556,15 @@ static bool prepare_triangle(vec4f clip[3], vec3f tri_eye[3], vec3f light_dir, i
 }
 
 void renderer_init(void) {
+    // Log available memory before allocations
+    ESP_LOGI(TAG, "Memory before renderer init:");
+    ESP_LOGI(TAG, "  Internal SRAM free: %d KB (largest block: %d KB)",
+             (int)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+             (int)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
+    ESP_LOGI(TAG, "  PSRAM free: %d KB (largest block: %d KB)",
+             (int)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+             (int)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+
     // Allocate z-buffer from PSRAM to save internal RAM
     // Using int16_t instead of float for faster comparisons (half the memory too)
     // Align to 16 bytes for PIE SIMD access
@@ -560,7 +573,21 @@ void renderer_init(void) {
         if (zbuffer == NULL) {
             zbuffer = (int16_t*)aligned_alloc(16, WIDTH * HEIGHT * sizeof(int16_t));
         }
-        ESP_LOGI(TAG, "Z-buffer: %d KB (int16, 16-byte aligned)", (int)(WIDTH * HEIGHT * sizeof(int16_t) / 1024));
+        ESP_LOGI(TAG, "Z-buffer: %d KB (int16, 16-byte aligned, in %s)",
+                 (int)(WIDTH * HEIGHT * sizeof(int16_t) / 1024),
+                 zbuffer ? "PSRAM" : "SRAM");
+    }
+
+    // Copy texture to internal SRAM for faster access
+    if (texture_sram == NULL) {
+        texture_sram = (uint8_t*)heap_caps_malloc(TEXTURE_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (texture_sram != NULL) {
+            memcpy(texture_sram, texture_data, TEXTURE_SIZE);
+            ESP_LOGI(TAG, "Texture: %d KB copied to internal SRAM", (int)(TEXTURE_SIZE / 1024));
+        } else {
+            ESP_LOGW(TAG, "Texture: staying in flash (SRAM alloc failed)");
+            texture_sram = (uint8_t*)texture_data;  // Fall back to flash
+        }
     }
 
     // Create semaphores for parallel rendering
