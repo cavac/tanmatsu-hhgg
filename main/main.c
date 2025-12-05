@@ -205,7 +205,20 @@ void app_main(void) {
     int x_offset = (display_h_res - 480) / 2;
     int fb_stride = display_h_res * 3;  // RGB888 = 3 bytes per pixel
 
-    uint32_t delay = pdMS_TO_TICKS(1);  // 1ms timeout for responsive input
+    // Enable tearing effect (vsync) mode and get semaphore for smooth animation
+    SemaphoreHandle_t vsync_sem = NULL;
+    esp_err_t te_err = bsp_display_set_tearing_effect_mode(BSP_DISPLAY_TE_V_BLANKING);
+    if (te_err == ESP_OK) {
+        te_err = bsp_display_get_tearing_effect_semaphore(&vsync_sem);
+    }
+    if (te_err == ESP_OK && vsync_sem != NULL) {
+        ESP_LOGI(TAG, "Vsync synchronization enabled (TE_V_BLANKING mode)");
+    } else {
+        ESP_LOGW(TAG, "Vsync not available (err=%d) - animation may stutter", te_err);
+        vsync_sem = NULL;  // Disable vsync waiting
+    }
+
+    uint32_t delay = pdMS_TO_TICKS(0);  // No delay - vsync provides timing
     // Draw black background
     pax_background(&fb, BLACK);
     pax_draw_text(&fb, WHITE, pax_font_sky_mono, 50, 490, 20, "The");
@@ -220,7 +233,7 @@ void app_main(void) {
 
     // Performance measurement variables
     int64_t render_time_sum = 0;
-    int64_t copy_time_sum = 0;
+    int64_t vsync_time_sum = 0;
     int64_t blit_time_sum = 0;
     int perf_frame_count = 0;
 
@@ -258,12 +271,16 @@ void app_main(void) {
         t_end = esp_timer_get_time();
         render_time_sum += (t_end - t_start);
 
-        // Copy step eliminated - renderer writes directly to framebuffer
-        copy_time_sum += 0;
-
-        // Blit to display (only partial updates for better FPS)
+        // Wait for vsync to avoid tearing and ensure smooth animation
         t_start = esp_timer_get_time();
-        // blit();
+        if (vsync_sem != NULL) {
+            xSemaphoreTake(vsync_sem, pdMS_TO_TICKS(50));  // Wait up to 50ms for vsync
+        }
+        t_end = esp_timer_get_time();
+        vsync_time_sum += (t_end - t_start);
+
+        // Blit to display
+        t_start = esp_timer_get_time();
         bsp_display_blit(0, 0, 480, 480, pax_buf_get_pixels(&fb));
         t_end = esp_timer_get_time();
         blit_time_sum += (t_end - t_start);
@@ -273,17 +290,17 @@ void app_main(void) {
         // Log performance stats every PERF_SAMPLE_FRAMES frames
         if (perf_frame_count >= PERF_SAMPLE_FRAMES) {
             int64_t avg_render = render_time_sum / PERF_SAMPLE_FRAMES;
-            int64_t avg_copy = copy_time_sum / PERF_SAMPLE_FRAMES;
+            int64_t avg_vsync = vsync_time_sum / PERF_SAMPLE_FRAMES;
             int64_t avg_blit = blit_time_sum / PERF_SAMPLE_FRAMES;
-            int64_t avg_total = avg_render + avg_copy + avg_blit;
+            int64_t avg_total = avg_render + avg_vsync + avg_blit;
 
-            ESP_LOGI(TAG, "Perf (avg %d frames): render=%lldus, copy=%lldus, blit=%lldus, total=%lldus (%.1f fps)",
-                     PERF_SAMPLE_FRAMES, avg_render, avg_copy, avg_blit, avg_total,
+            ESP_LOGI(TAG, "Perf (avg %d frames): render=%lldus, vsync=%lldus, blit=%lldus, total=%lldus (%.1f fps)",
+                     PERF_SAMPLE_FRAMES, avg_render, avg_vsync, avg_blit, avg_total,
                      1000000.0 / avg_total);
 
             // Reset counters
             render_time_sum = 0;
-            copy_time_sum = 0;
+            vsync_time_sum = 0;
             blit_time_sum = 0;
             perf_frame_count = 0;
         }

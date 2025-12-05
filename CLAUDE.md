@@ -74,9 +74,12 @@ Synchronization uses FreeRTOS binary semaphores with frame-level sync (one sync 
 
 ## Performance
 
-Typical frame timing (~35 fps):
+Typical frame timing (~30 fps with vsync):
 - Render: ~27ms (dual-core rasterization)
+- Vsync wait: ~4ms (synchronized to 60Hz display)
 - Blit: ~0.7ms (DMA to display)
+
+With vsync disabled, raw render performance is ~35 fps. With vsync enabled (smooth animation), frames are locked to 30 fps (every other 60Hz refresh) since render time exceeds one vsync period.
 
 ### Optimization History
 - Original single-core with float z-buffer: ~9 fps
@@ -87,7 +90,7 @@ Typical frame timing (~35 fps):
 - After incremental attribute interpolation: ~23 fps
 - After span-based rasterization: ~25 fps
 - After texture copy to internal SRAM: ~27 fps
-- After 8-bit z-buffer in internal SRAM: ~35 fps
+- After 8-bit z-buffer in internal SRAM: ~35 fps (raw), ~30 fps (vsync)
 
 ### Rasterization Optimizations
 
