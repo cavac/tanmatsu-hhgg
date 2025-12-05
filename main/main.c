@@ -276,7 +276,7 @@ void app_main(void) {
         if (current_fps > 0) {
             char fps_str[16];
             snprintf(fps_str, sizeof(fps_str), "%.1f fps", current_fps);
-            font_draw_string_270(render_target, 480, 480, 5, 5, fps_str, 0, 0, 0);  // Black text
+            font_draw_string_270(render_target, 480, 480, 12, 12, fps_str, 0, 0, 0);  // Black text
         }
 
         t_end = esp_timer_get_time();

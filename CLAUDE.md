@@ -135,7 +135,7 @@ Before each blit, the main loop waits on the semaphore to synchronize with the d
 
 ### Simple Bitmap Font
 
-PAX font rendering is too slow for real-time FPS display. A custom 5x7 bitmap font (`simple_font.h`) draws directly to the framebuffer with rotation compensation for the 270° display orientation. Supports digits 0-9, decimal point, space, and "fps" letters.
+PAX font rendering is too slow for real-time FPS display. A custom 5x7 bitmap font (`simple_font.h`) draws directly to the framebuffer. The font uses screen coordinates (where text should appear as the user sees it) and the coordinate transform to buffer coordinates handles the 270° display rotation automatically - no glyph rotation needed. Supports digits 0-9, decimal point, space, and "fps" letters.
 
 ### Future Optimization Opportunities
 
