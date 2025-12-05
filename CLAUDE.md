@@ -60,7 +60,9 @@ Cube is rendered at 480x480 pixels, centered on the 800x480 display with black b
 
 ### Z-Buffer Implementation
 
-The z-buffer uses 16-bit integers for faster comparisons and lower memory usage. NDC z-values are clamped to [-1, 1] before scaling to prevent integer overflow, which was causing rendering artifacts near corners close to the camera. Buffer is 16-byte aligned for potential SIMD access.
+The z-buffer uses 8-bit integers (configurable via `ZBUFFER_8BIT` define) to fit in internal SRAM for faster access. NDC z-values are mapped from [-1, 1] to [0, 254]. The 8-bit precision is sufficient for the cube demo with no visible z-fighting. Buffer is 16-byte aligned.
+
+For more complex scenes requiring higher depth precision, set `ZBUFFER_8BIT 0` to use 16-bit z-buffer (450KB, allocated from PSRAM).
 
 ### Dual-Core Parallelization
 
@@ -72,9 +74,9 @@ Synchronization uses FreeRTOS binary semaphores with frame-level sync (one sync 
 
 ## Performance
 
-Typical frame timing (~25 fps):
-- Render: ~39ms (dual-core rasterization)
-- Blit: ~0.5ms (DMA to display)
+Typical frame timing (~35 fps):
+- Render: ~27ms (dual-core rasterization)
+- Blit: ~0.7ms (DMA to display)
 
 ### Optimization History
 - Original single-core with float z-buffer: ~9 fps
@@ -84,6 +86,8 @@ Typical frame timing (~25 fps):
 - After incremental integer edge evaluation: ~18 fps
 - After incremental attribute interpolation: ~23 fps
 - After span-based rasterization: ~25 fps
+- After texture copy to internal SRAM: ~27 fps
+- After 8-bit z-buffer in internal SRAM: ~35 fps
 
 ### Rasterization Optimizations
 
@@ -116,14 +120,15 @@ The following ESP-IDF settings are enabled in `sdkconfigs/tanmatsu`:
 ### Future Optimization Opportunities
 
 - **Smaller render resolution**: Render at 240×240, use PPA to scale up to 480×480
-- **Texture in internal SRAM**: Move 12KB texture from flash to fast internal memory
 - **Lower color depth**: RGB565 instead of RGB888 (fewer bytes per pixel write)
 
 ## Memory Considerations
 
-This project is tight on internal SRAM. Large buffers must be allocated from PSRAM:
-- `zbuffer` (460KB) - int16_t array for depth testing, allocated via heap_caps_aligned_alloc (16-byte aligned for SIMD)
-- `texture_data` (12KB) - 64x64 RGB texture embedded in flash
+Memory allocation strategy (all in internal SRAM for maximum performance):
+- `zbuffer` (225KB) - uint8_t array for depth testing, allocated from internal SRAM
+- `texture_sram` (12KB) - 64x64 RGB texture copied from flash to internal SRAM
+
+At startup, ~533KB internal SRAM is free (largest block ~376KB). Using 8-bit z-buffer (225KB) instead of 16-bit (450KB) allows it to fit in internal SRAM, providing a ~30% performance boost over PSRAM.
 
 The renderer writes directly to the PAX graphics library framebuffer with stride support, eliminating the need for an intermediate render buffer.
 

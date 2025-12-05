@@ -89,10 +89,22 @@ static mat4f ModelView;
 static mat4f Perspective;
 static mat4f Viewport;
 
-// Z-buffer (16-bit fixed point for faster comparisons)
-// Z values scaled from [-1, 1] to [INT16_MIN, INT16_MAX]
+// Z-buffer configuration: use 8-bit for SRAM (230KB) or 16-bit for PSRAM (450KB)
+#define ZBUFFER_8BIT 1  // Set to 1 for 8-bit (fits in SRAM), 0 for 16-bit (needs PSRAM)
+
+#if ZBUFFER_8BIT
+// 8-bit z-buffer: 230KB, fits in internal SRAM
+static uint8_t* zbuffer = NULL;
+#define Z_SCALE 127.0f
+#define Z_CLEAR 0
+typedef uint8_t zbuf_t;
+#else
+// 16-bit z-buffer: 450KB, needs PSRAM
 static int16_t* zbuffer = NULL;
 #define Z_SCALE 32767.0f
+#define Z_CLEAR 0x8080  // ~INT16_MIN
+typedef int16_t zbuf_t;
+#endif
 
 // Texture copy in internal SRAM for faster access (flash is slower)
 static uint8_t* texture_sram = NULL;
@@ -359,7 +371,7 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
         if (span_left > span_right) continue;  // No pixels on this scanline
 
         // Get row pointers
-        int16_t* zbuf_row = zbuffer + y * WIDTH;
+        zbuf_t* zbuf_row = zbuffer + y * WIDTH;
         uint8_t* fb_row = current_framebuffer + y * current_stride;
 
         // Compute attributes at span start
@@ -369,15 +381,22 @@ static void rasterize_columns(const RasterJob* job, int x_start, int x_end) {
 
         // Process span - no edge tests needed!
         for (int x = span_left; x <= span_right; x++) {
-            // Clamp z to int16 range
-            int16_t z16;
-            if (z_row < -32767.0f) z16 = -32767;
-            else if (z_row > 32767.0f) z16 = 32767;
-            else z16 = (int16_t)z_row;
+            // Clamp z to zbuf_t range
+#if ZBUFFER_8BIT
+            // 8-bit: map [-127, 127] to [0, 254], use 255 as "no geometry"
+            int z_int = (int)(z_row + 127.0f);
+            zbuf_t z_val = (z_int < 0) ? 0 : (z_int > 254) ? 254 : (zbuf_t)z_int;
+#else
+            // 16-bit: use full int16 range
+            zbuf_t z_val;
+            if (z_row < -32767.0f) z_val = -32767;
+            else if (z_row > 32767.0f) z_val = 32767;
+            else z_val = (zbuf_t)z_row;
+#endif
 
-            // Z-buffer test
-            if (z16 >= zbuf_row[x]) {
-                zbuf_row[x] = z16;
+            // Z-buffer test (larger z = closer to camera)
+            if (z_val >= zbuf_row[x]) {
+                zbuf_row[x] = z_val;
 
                 // Sample texture from SRAM (u/v are pre-multiplied by texture size)
                 int tx = ((int)u_row) & (TEX_WIDTH - 1);
@@ -565,17 +584,30 @@ void renderer_init(void) {
              (int)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
              (int)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
 
-    // Allocate z-buffer from PSRAM to save internal RAM
-    // Using int16_t instead of float for faster comparisons (half the memory too)
-    // Align to 16 bytes for PIE SIMD access
+    // Allocate z-buffer - try internal SRAM first (faster), fall back to PSRAM
     if (zbuffer == NULL) {
-        zbuffer = (int16_t*)heap_caps_aligned_alloc(16, WIDTH * HEIGHT * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+        size_t zbuf_size = WIDTH * HEIGHT * sizeof(zbuf_t);
+#if ZBUFFER_8BIT
+        // 8-bit z-buffer fits in internal SRAM
+        zbuffer = (zbuf_t*)heap_caps_aligned_alloc(16, zbuf_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        const char* zbuf_loc = "internal SRAM";
         if (zbuffer == NULL) {
-            zbuffer = (int16_t*)aligned_alloc(16, WIDTH * HEIGHT * sizeof(int16_t));
+            zbuffer = (zbuf_t*)heap_caps_aligned_alloc(16, zbuf_size, MALLOC_CAP_SPIRAM);
+            zbuf_loc = "PSRAM (SRAM failed)";
         }
-        ESP_LOGI(TAG, "Z-buffer: %d KB (int16, 16-byte aligned, in %s)",
-                 (int)(WIDTH * HEIGHT * sizeof(int16_t) / 1024),
-                 zbuffer ? "PSRAM" : "SRAM");
+#else
+        // 16-bit z-buffer too large for SRAM, use PSRAM
+        zbuffer = (zbuf_t*)heap_caps_aligned_alloc(16, zbuf_size, MALLOC_CAP_SPIRAM);
+        const char* zbuf_loc = "PSRAM";
+        if (zbuffer == NULL) {
+            zbuffer = (zbuf_t*)aligned_alloc(16, zbuf_size);
+            zbuf_loc = "heap";
+        }
+#endif
+        ESP_LOGI(TAG, "Z-buffer: %d KB (%d-bit, in %s)",
+                 (int)(zbuf_size / 1024),
+                 (int)(sizeof(zbuf_t) * 8),
+                 zbuf_loc);
     }
 
     // Copy texture to internal SRAM for faster access
@@ -634,9 +666,14 @@ void renderer_render_frame(unsigned char* framebuffer, int stride, int frame_num
         }
     }
 
-    // Clear z-buffer using memset (set all bytes to 0x80 = INT16_MIN-ish)
-    // This sets each int16_t to 0x8080 = -32640, close enough to minimum
-    memset(zbuffer, 0x80, WIDTH * HEIGHT * sizeof(int16_t));
+    // Clear z-buffer to "far" value
+#if ZBUFFER_8BIT
+    // 8-bit: 0 = far (after +127 offset)
+    memset(zbuffer, 0, WIDTH * HEIGHT * sizeof(zbuf_t));
+#else
+    // 16-bit: 0x8080 = -32640, close to INT16_MIN
+    memset(zbuffer, 0x80, WIDTH * HEIGHT * sizeof(zbuf_t));
+#endif
 
     // Fixed camera position
     vec3f eye = {0.0f, 0.0f, 3.0f};
