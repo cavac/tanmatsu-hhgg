@@ -216,6 +216,7 @@ void app_main(void) {
     pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 240, "the 'tinyrenderer'");
     pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 260, "project.");
     pax_draw_text(&fb, WHITE, pax_font_sky_mono, 10, 490, 280, "https://haqr.eu/tinyrenderer/");
+    blit();
 
     // Performance measurement variables
     int64_t render_time_sum = 0;
@@ -260,9 +261,10 @@ void app_main(void) {
         // Copy step eliminated - renderer writes directly to framebuffer
         copy_time_sum += 0;
 
-        // Blit to display
+        // Blit to display (only partial updates for better FPS)
         t_start = esp_timer_get_time();
-        blit();
+        // blit();
+        bsp_display_blit(0, 0, 480, 480, pax_buf_get_pixels(&fb));
         t_end = esp_timer_get_time();
         blit_time_sum += (t_end - t_start);
 
