@@ -299,8 +299,16 @@ void app_main(void) {
         // Clear the right black bar area
         clear_right_bar(&fb);
 
-        // DEBUG: Test with intuitive coordinates (y=0 at top)
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 0, 240, "TEST", 3.0f, 255, 255, 255);
+        // Draw text in the right black bar area using Hershey vector font
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 20, "The", 50.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 450, 80, "Cube", 50.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 160, "3D render demo", 16.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 180, "by Rene 'cavac' Schickbauer", 10.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 220, "Loosely based on", 16.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 240, "the 'tinyrenderer'", 16.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 260, "project.", 16.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 290, "paulbourke.net/", 10.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 305, "dataformats/hershey/", 10.0f/21.0f, 255, 255, 255);
         uint8_t* render_target = fb_pixels + x_offset * 3;
 
         // DRAW 3D CUBE DIRECTLY INTO SCREEN BUFFER
