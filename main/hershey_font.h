@@ -15,18 +15,18 @@
 // Set a single pixel in the framebuffer (BGR888 format)
 // Takes SCREEN coordinates (as user sees them) and converts to buffer coords
 // for 270° rotated display.
-// Screen: 480 wide (x) × 800 tall (y) as user sees it
+// Screen: 800 wide (x) × 480 tall (y) as user sees it
 // Buffer: 800 wide × 480 tall in memory
 static inline void hershey_set_pixel(uint8_t* fb, int fb_stride, int fb_height,
                                      int screen_x, int screen_y,
                                      uint8_t r, uint8_t g, uint8_t b) {
     // Convert screen coords to buffer coords for 270° display
-    // Screen Y (0-799) maps to buffer X (0-799), inverted
-    // Screen X (0-479) maps to buffer Y (0-479)
-    int buf_x = fb_stride - 1 - screen_y;  // Use fb_stride (800) for screen height
+    // Screen X (0-799) maps to buffer Y (0-479)
+    // Screen Y (0-479) maps to buffer X (0-799), inverted
+    int buf_x = fb_stride - 1 - screen_y;
     int buf_y = screen_x;
 
-    // Bounds check in buffer space
+    // Bounds check in buffer space (buffer is 800 wide × 480 tall)
     if (buf_x < 0 || buf_x >= fb_stride || buf_y < 0 || buf_y >= fb_height) {
         return;
     }

@@ -117,8 +117,7 @@ static void save_screenshot(void) {
 // Fast direct buffer clear for right side black bar (screen x >= 480)
 // Screen is landscape 800x480, cube is 480x480 on the left
 // Buffer format: 800x480 RGB888, stride = 2400 bytes
-static void clear_right_bar(pax_buf_t* buf) {
-    uint8_t* pixels = (uint8_t*)pax_buf_get_pixels(buf);
+static void clear_right_bar(uint8_t* fb_pixels) {
     int stride = display_h_res * 3;  // 800 * 3 = 2400 bytes per row
     int linecount = display_v_res - 480 - 1;
 
@@ -127,10 +126,10 @@ static void clear_right_bar(pax_buf_t* buf) {
     // This is a contiguous region of memory, so we can use a single memset, no need for a loop
     /*
     for (int x = 480; x < display_v_res; x++) {
-        memset(pixels + x * stride, 0, stride);
+        memset(fb_pixels + x * stride, 0, stride);
     }
     */
-    memset(pixels + 480 * stride, 0, linecount * stride);
+    memset(fb_pixels + 480 * stride, 0, linecount * stride);
 
 }
 
@@ -297,23 +296,23 @@ void app_main(void) {
         uint8_t* fb_pixels = (uint8_t*)pax_buf_get_pixels(&fb);
 
         // Clear the right black bar area
-        clear_right_bar(&fb);
+        //clear_right_bar(fb_pixels);
 
         // Draw text in the right black bar area using Hershey vector font
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 20, "The", 50.0f/21.0f, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 450, 80, "Cube", 50.0f/21.0f, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 160, "3D render demo", 16.0f/21.0f, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 180, "by Rene 'cavac' Schickbauer", 10.0f/21.0f, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 220, "Loosely based on", 16.0f/21.0f, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 240, "the 'tinyrenderer'", 16.0f/21.0f, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 260, "project.", 16.0f/21.0f, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 290, "paulbourke.net/", 10.0f/21.0f, 255, 255, 255);
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 390, 305, "dataformats/hershey/", 10.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 20, "The", 50.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 550, 80, "Cube", 50.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 160, "3D render demo", 16.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 180, "by Rene 'cavac' Schickbauer", 10.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 220, "Loosely based on", 16.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 240, "the 'tinyrenderer'", 16.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 260, "project.", 16.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 290, "paulbourke.net/", 10.0f/21.0f, 255, 255, 255);
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 490, 305, "dataformats/hershey/", 10.0f/21.0f, 255, 255, 255);
         uint8_t* render_target = fb_pixels + x_offset * 3;
 
         // DRAW 3D CUBE DIRECTLY INTO SCREEN BUFFER
         t_start = esp_timer_get_time();
-        //renderer_render_frame(render_target, fb_stride, frame_number++);
+        renderer_render_frame(render_target, fb_stride, frame_number++);
 
         // Draw FPS counter using fast bitmap font (within the 480x480 render area)
         // Uses 270° rotated drawing to match display orientation
