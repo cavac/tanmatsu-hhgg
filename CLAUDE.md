@@ -26,7 +26,7 @@ make monitor    # View debug output via USB
 - **Dual-core rendering** - Rasterization split by columns between Core 0 and Core 1
 - **Direct framebuffer access** - Renderer writes directly to PAX framebuffer (no intermediate copy)
 - **BGR byte order** - Display framebuffer uses BGR888 format (not RGB)
-- **270° display rotation** - Display is internally rotated; coordinate transforms applied
+- **270° display rotation** - Display panel is internally rotated; buffer rows map to screen columns
 - **Vsync synchronization** - Tearing effect (TE) pin used for smooth animation
 
 ## Key Files
@@ -59,7 +59,7 @@ The renderer implements:
 - Diffuse lighting (modulates texture color)
 - Backface culling
 
-Cube is rendered at 480x480 pixels, centered on the 800x480 display with black bars on the sides.
+Cube is rendered at 480x480 pixels on the left side of the 800x480 display, with a 320-pixel black bar on the right.
 
 ### Z-Buffer Implementation
 
@@ -136,6 +136,19 @@ Before each blit, the main loop waits on the semaphore to synchronize with the d
 ### Simple Bitmap Font
 
 PAX font rendering is too slow for real-time FPS display. A custom 5x7 bitmap font (`simple_font.h`) draws directly to the framebuffer. The font uses screen coordinates (where text should appear as the user sees it) and the coordinate transform to buffer coordinates handles the 270° display rotation automatically - no glyph rotation needed. Supports digits 0-9, decimal point, space, and "fps" letters.
+
+### Buffer Coordinate Mapping (270° Rotation)
+
+Due to the 270° display rotation, buffer coordinates map to screen coordinates as follows:
+- **Buffer rows** (Y axis, 0-799) map to **screen columns** (X axis, left-to-right)
+- **Buffer columns** (X axis, 0-479) map to **screen rows** (Y axis)
+
+The cube renders to buffer rows 0-479 (screen left side). The right-side black bar corresponds to buffer rows 480-799. Since buffer rows are contiguous in memory, clearing the black bar is a single `memset` operation:
+```c
+memset(pixels + 480 * stride, 0, (display_v_res - 480) * stride);
+```
+
+This is much faster than `pax_background()` which clears the entire framebuffer. The renderer already clears its own 480x480 region, so only the black bar needs explicit clearing.
 
 ### Future Optimization Opportunities
 

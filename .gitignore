@@ -21,3 +21,4 @@ sdkconfig_*
 components/*
 .hg
 .hgignore
+*.swp

@@ -299,9 +299,8 @@ void app_main(void) {
         // Clear the right black bar area
         clear_right_bar(&fb);
 
-        // DEBUG: Test with simple coordinates to verify rotation transform
-        // Screen coords: x=100, y=100 should appear near upper-left area
-        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 100, 100, "TEST", 3.0f, 255, 255, 255);
+        // DEBUG: Test with intuitive coordinates (y=0 at top)
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 0, 240, "TEST", 3.0f, 255, 255, 255);
         uint8_t* render_target = fb_pixels + x_offset * 3;
 
         // DRAW 3D CUBE DIRECTLY INTO SCREEN BUFFER

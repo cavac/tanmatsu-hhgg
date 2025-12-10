@@ -63,7 +63,7 @@ static inline void hershey_draw_line(uint8_t* fb, int fb_stride, int fb_height,
 }
 
 // Draw a single character from the Hershey font
-// screen_x, screen_y: SCREEN coordinates (as user sees them, same as pax_draw_text)
+// screen_x, screen_y: SCREEN coordinates (as user sees them, y=0 at top)
 // scale: scaling factor (1.0 = original size, ~21 pixels tall)
 // Returns: scaled character width for horizontal advance
 static inline int hershey_draw_char(uint8_t* fb, int fb_stride, int fb_height,
@@ -84,6 +84,8 @@ static inline int hershey_draw_char(uint8_t* fb, int fb_stride, int fb_height,
         return (int)(char_width * scale);
     }
 
+    int start_y = screen_y; // fb_height - 1 - screen_y;
+
     // Process vertex pairs
     int pen_down = 0;
     int prev_sx = 0, prev_sy = 0;
@@ -103,9 +105,9 @@ static inline int hershey_draw_char(uint8_t* fb, int fb_stride, int fb_height,
         int gx = (int)(vx * scale);
         int gy = (int)((HERSHEY_BASE_HEIGHT - vy) * scale);
 
-        // No glyph rotation - coordinate transform in hershey_set_pixel handles display rotation
+        // Apply coordinates - only starting position is inverted, glyph offsets are normal
         int sx = screen_x + gx;
-        int sy = screen_y + gy;
+        int sy = start_y + gy;
 
         if (pen_down) {
             hershey_draw_line(fb, fb_stride, fb_height,
