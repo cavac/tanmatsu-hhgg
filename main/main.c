@@ -25,6 +25,7 @@
 #include "renderer.h"
 #include "usb_device.h"
 #include "simple_font.h"
+#include "hershey_font.h"
 
 //#define CAVAC_DEBUG
 
@@ -241,6 +242,7 @@ void app_main(void) {
 
     uint32_t delay = pdMS_TO_TICKS(0);  // No delay - vsync provides timing
     // Draw black background
+    /*
     pax_background(&fb, BLACK);
     pax_draw_text(&fb, WHITE, pax_font_sky_mono, 50, 490, 20, "The");
     pax_draw_text(&fb, WHITE, pax_font_sky_mono, 50, 490, 80, "Cube");
@@ -251,6 +253,7 @@ void app_main(void) {
     pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 260, "project.");
     pax_draw_text(&fb, WHITE, pax_font_sky_mono, 10, 490, 280, "https://haqr.eu/tinyrenderer/");
     blit();
+    */
 
     // Performance measurement variables
     int64_t render_time_sum = 0;
@@ -288,26 +291,22 @@ void app_main(void) {
             }
         }
 
-        /*
-        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 50, 490, 20, "The");
-        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 50, 490, 80, "Cube");
-        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 160, "3D render demo");
-        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 10, 490, 180, "by Rene 'cavac' Schickbauer");
-        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 220, "Loosely based on");
-        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 240, "the 'tinyrenderer'");
-        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 16, 490, 260, "project.");
-        pax_draw_text(&fb, WHITE, pax_font_sky_mono, 10, 490, 280, "https://haqr.eu/tinyrenderer/");
-        */
-
         int64_t t_start, t_end;
 
         // Get pointer to PAX framebuffer with offset for centered cube
         uint8_t* fb_pixels = (uint8_t*)pax_buf_get_pixels(&fb);
+
+        // Clear the right black bar area
+        clear_right_bar(&fb);
+
+        // DEBUG: Test with simple coordinates to verify rotation transform
+        // Screen coords: x=100, y=100 should appear near upper-left area
+        hershey_draw_string(fb_pixels, display_h_res, display_v_res, 100, 100, "TEST", 3.0f, 255, 255, 255);
         uint8_t* render_target = fb_pixels + x_offset * 3;
 
         // DRAW 3D CUBE DIRECTLY INTO SCREEN BUFFER
         t_start = esp_timer_get_time();
-        renderer_render_frame(render_target, fb_stride, frame_number++);
+        //renderer_render_frame(render_target, fb_stride, frame_number++);
 
         // Draw FPS counter using fast bitmap font (within the 480x480 render area)
         // Uses 270° rotated drawing to match display orientation
@@ -327,7 +326,6 @@ void app_main(void) {
         }
         t_end = esp_timer_get_time();
         vsync_time_sum += (t_end - t_start);
-        clear_right_bar(&fb);
 
         // Blit to display
         t_start = esp_timer_get_time();
