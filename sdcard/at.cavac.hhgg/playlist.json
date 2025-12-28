@@ -3,31 +3,31 @@
   "videos": [
     {
       "id": "alcohol",
-      "display_name": "Alcohol",
+      "display_name": "alcohol",
       "video_file": "alcohol.h264",
       "audio_file": "alcohol.aac",
-      "duration_sec": 94
+      "duration_sec": 93
     },
     {
       "id": "babelfish",
-      "display_name": "Babel Fish",
+      "display_name": "babelfish",
       "video_file": "babelfish.h264",
       "audio_file": "babelfish.aac",
       "duration_sec": 116
     },
     {
       "id": "earth",
-      "display_name": "Earth",
+      "display_name": "earth",
       "video_file": "earth.h264",
       "audio_file": "earth.aac",
       "duration_sec": 5
     },
     {
       "id": "poetry",
-      "display_name": "Vogon Poetry",
+      "display_name": "poetry",
       "video_file": "poetry.h264",
       "audio_file": "poetry.aac",
-      "duration_sec": 78
+      "duration_sec": 77
     }
   ]
 }

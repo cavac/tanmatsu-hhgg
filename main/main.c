@@ -116,6 +116,10 @@ static esp_err_t start_playback(video_entry_t* entry) {
         return ret;
     }
 
+    // Clear screen to black for letterbox bars
+    pax_background(&fb, 0);
+    blit();
+
     // Start audio playback
     ret = audio_player_start(&current_media);
     if (ret != ESP_OK) {
@@ -140,6 +144,12 @@ static void stop_playback(void) {
     video_ended = false;
 }
 
+// Timing statistics for performance debugging
+static uint32_t timing_nal_us = 0;
+static uint32_t timing_decode_us = 0;
+static uint32_t timing_convert_us = 0;
+static uint32_t timing_frame_count = 0;
+
 // Process one video frame with A/V sync
 static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height) {
     // Get audio position for A/V sync
@@ -154,16 +164,22 @@ static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height
     // We need to decode frame(s) to catch up to audio
     // Skip frames if way behind (more than 1 frame)
     while (current_frame < expected_frame) {
+        int64_t t0 = esp_timer_get_time();
+
         size_t nal_size = 0;
         uint8_t* nal_data = stream_next_video_nal(&current_media, &nal_size);
         if (!nal_data) {
             return true;  // End of video
         }
 
+        int64_t t1 = esp_timer_get_time();
+
         // Decode frame
         uint8_t* yuv_out = NULL;
         int width = 0, height = 0;
         esp_err_t ret = video_decoder_decode(nal_data, nal_size, &yuv_out, &width, &height);
+
+        int64_t t2 = esp_timer_get_time();
 
         current_frame++;
 
@@ -171,6 +187,27 @@ static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height
         if (current_frame >= expected_frame && ret == ESP_OK && yuv_out) {
             // Convert YUV to BGR and write to framebuffer (includes 270° rotation)
             yuv_to_bgr(yuv_out, fb_pixels, width, height);
+
+            int64_t t3 = esp_timer_get_time();
+
+            // Accumulate timing stats
+            timing_nal_us += (t1 - t0);
+            timing_decode_us += (t2 - t1);
+            timing_convert_us += (t3 - t2);
+            timing_frame_count++;
+
+            // Log every 30 frames (~3 seconds at 10fps)
+            if (timing_frame_count >= 30) {
+                ESP_LOGI(TAG, "Frame timing (avg of 30): NAL=%.1fms, Decode=%.1fms, Convert=%.1fms, Total=%.1fms",
+                         timing_nal_us / 30000.0f,
+                         timing_decode_us / 30000.0f,
+                         timing_convert_us / 30000.0f,
+                         (timing_nal_us + timing_decode_us + timing_convert_us) / 30000.0f);
+                timing_nal_us = 0;
+                timing_decode_us = 0;
+                timing_convert_us = 0;
+                timing_frame_count = 0;
+            }
         }
     }
 
@@ -409,13 +446,40 @@ void app_main(void) {
                 break;
         }
 
+        // Timing for vsync and blit (only during playback)
+        static uint32_t timing_vsync_us = 0;
+        static uint32_t timing_blit_us = 0;
+        static uint32_t timing_loop_count = 0;
+
+        int64_t tv0 = esp_timer_get_time();
+
         // Wait for vsync
         if (vsync_sem != NULL) {
             xSemaphoreTake(vsync_sem, pdMS_TO_TICKS(50));
         }
 
+        int64_t tv1 = esp_timer_get_time();
+
         // Blit to display
         blit();
+
+        int64_t tv2 = esp_timer_get_time();
+
+        // Log vsync/blit timing during playback
+        if (app_state == APP_STATE_PLAYING) {
+            timing_vsync_us += (tv1 - tv0);
+            timing_blit_us += (tv2 - tv1);
+            timing_loop_count++;
+
+            if (timing_loop_count >= 100) {
+                ESP_LOGI(TAG, "Loop timing (avg of 100): Vsync=%.1fms, Blit=%.1fms",
+                         timing_vsync_us / 100000.0f,
+                         timing_blit_us / 100000.0f);
+                timing_vsync_us = 0;
+                timing_blit_us = 0;
+                timing_loop_count = 0;
+            }
+        }
 
         // Small delay to prevent tight loop
         vTaskDelay(pdMS_TO_TICKS(1));

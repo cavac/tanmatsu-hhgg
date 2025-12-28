@@ -101,10 +101,7 @@ esp_err_t audio_player_start(preloaded_media_t* media) {
 
     xSemaphoreGive(audio_mutex);
 
-    // Enable I2S channel and amplifier for playback
-    if (i2s_tx_handle) {
-        i2s_channel_enable(i2s_tx_handle);
-    }
+    // Just enable amplifier - BSP manages I2S channel state
     bsp_audio_set_amplifier(true);
 
     // Create audio task on Core 1
@@ -155,10 +152,15 @@ void audio_player_stop(void) {
     audio_playing = false;
     current_media = NULL;
 
-    // Stop I2S DMA to prevent audio looping
+    // Flush I2S with silence to stop audio cleanly
     if (i2s_tx_handle) {
-        // Disable the I2S channel - will be re-enabled on next playback
-        i2s_channel_disable(i2s_tx_handle);
+        memset(pcm_buffer, 0, PCM_BUFFER_SIZE);
+        size_t bytes_written = 0;
+        // Write silence multiple times to flush DMA buffer
+        for (int i = 0; i < 4; i++) {
+            i2s_channel_write(i2s_tx_handle, pcm_buffer, PCM_BUFFER_SIZE,
+                              &bytes_written, pdMS_TO_TICKS(20));
+        }
     }
 
     // Turn off amplifier until next playback

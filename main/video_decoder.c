@@ -10,8 +10,8 @@
 
 static const char* TAG = "video_decoder";
 
-// Frame dimensions (fixed for our videos)
-#define FRAME_WIDTH  800
+// Frame dimensions (fixed for our videos - letterboxed on 800x480 display)
+#define FRAME_WIDTH  600
 #define FRAME_HEIGHT 480
 
 // YUV420 buffer size: width * height * 1.5
@@ -22,14 +22,20 @@ static esp_h264_dec_param_handle_t param_handle = NULL;
 static uint8_t* yuv_buffer = NULL;
 
 esp_err_t video_decoder_init(void) {
-    // Allocate YUV buffer in PSRAM
-    yuv_buffer = heap_caps_malloc(YUV_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
-    if (!yuv_buffer) {
-        ESP_LOGE(TAG, "Failed to allocate YUV buffer (%d bytes)", YUV_BUFFER_SIZE);
-        return ESP_ERR_NO_MEM;
+    // Try to allocate YUV buffer in internal SRAM for speed
+    yuv_buffer = heap_caps_malloc(YUV_BUFFER_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (yuv_buffer) {
+        ESP_LOGI(TAG, "Allocated YUV buffer: %d bytes in internal SRAM", YUV_BUFFER_SIZE);
+    } else {
+        // Fallback to PSRAM
+        yuv_buffer = heap_caps_malloc(YUV_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+        if (!yuv_buffer) {
+            ESP_LOGE(TAG, "Failed to allocate YUV buffer (%d bytes)", YUV_BUFFER_SIZE);
+            return ESP_ERR_NO_MEM;
+        }
+        ESP_LOGI(TAG, "Allocated YUV buffer: %d bytes in PSRAM (SRAM unavailable)", YUV_BUFFER_SIZE);
     }
     memset(yuv_buffer, 0, YUV_BUFFER_SIZE);
-    ESP_LOGI(TAG, "Allocated YUV buffer: %d bytes in PSRAM", YUV_BUFFER_SIZE);
 
     // Create software decoder
     esp_h264_dec_cfg_t cfg = {
