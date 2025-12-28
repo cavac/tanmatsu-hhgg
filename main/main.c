@@ -63,8 +63,14 @@ static bool video_ended = false;
 #define VIDEO_FPS           10
 #define FRAME_DURATION_MS   (1000 / VIDEO_FPS)
 
-// Playback timing - use elapsed time as master clock
+// I2S buffer latency compensation (samples in DMA buffer not yet played)
+// At 44.1kHz with ~2048 samples buffered, this is ~46ms
+#define AUDIO_BUFFER_LATENCY_MS  50
+
+// Playback timing
 static int64_t playback_start_time_us = 0;
+static int64_t audio_end_time_us = 0;      // When audio stopped (for wall clock fallback)
+static uint32_t audio_end_position_ms = 0; // Audio position when it stopped
 
 void blit(void) {
     bsp_display_blit(0, 0, display_h_res, display_v_res, pax_buf_get_pixels(&fb));
@@ -132,8 +138,10 @@ static esp_err_t start_playback(video_entry_t* entry) {
     current_frame = 0;
     video_ended = false;
 
-    // Record playback start time for frame timing
+    // Reset timing state
     playback_start_time_us = esp_timer_get_time();
+    audio_end_time_us = 0;
+    audio_end_position_ms = 0;
 
     return ESP_OK;
 }
@@ -156,77 +164,105 @@ static uint32_t timing_decode_us = 0;
 static uint32_t timing_convert_us = 0;
 static uint32_t timing_frame_count = 0;
 
-// Process one video frame with timing based on elapsed time
+// Process one video frame with timing synced to audio position
 static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height) {
-    // Calculate expected frame from elapsed time (10 FPS = 100ms per frame)
-    int64_t elapsed_us = esp_timer_get_time() - playback_start_time_us;
-    int expected_frame = (int)(elapsed_us / (FRAME_DURATION_MS * 1000));
+    // Get current audio position (master clock)
+    uint32_t audio_pos_ms = audio_player_get_position_ms();
+
+    // Handle case where audio has ended - switch to wall clock
+    static bool audio_was_playing = false;
+    bool audio_playing = audio_player_is_playing();
+
+    if (audio_was_playing && !audio_playing) {
+        // Audio just ended - record the transition point
+        audio_end_time_us = esp_timer_get_time();
+        audio_end_position_ms = audio_pos_ms;
+        ESP_LOGI(TAG, "Audio ended at %lums, switching to wall clock", (unsigned long)audio_pos_ms);
+    }
+    audio_was_playing = audio_playing;
+
+    // Calculate sync position - use audio if playing, else wall clock continuation
+    uint32_t sync_pos_ms;
+    if (audio_playing) {
+        sync_pos_ms = audio_pos_ms;
+    } else if (audio_end_time_us > 0) {
+        // Continue from where audio left off using wall clock
+        int64_t since_audio_end_us = esp_timer_get_time() - audio_end_time_us;
+        sync_pos_ms = audio_end_position_ms + (uint32_t)(since_audio_end_us / 1000);
+    } else {
+        // Fallback to wall clock from start
+        sync_pos_ms = (uint32_t)((esp_timer_get_time() - playback_start_time_us) / 1000);
+    }
+
+    int expected_frame = (int)(sync_pos_ms / FRAME_DURATION_MS);
 
     // If we're ahead of schedule, don't decode a new frame yet
     if (current_frame > expected_frame) {
         return false;  // Wait for time to catch up
     }
 
-    // We need to decode frame(s) to catch up to schedule
-    // Skip frames if behind (decode without display)
+    // Decode NALs until we have enough frames to catch up
+    // NOTE: Only increment current_frame when decoder outputs a frame, not for every NAL
     while (current_frame < expected_frame) {
         int64_t t0 = esp_timer_get_time();
 
         size_t nal_size = 0;
         uint8_t* nal_data = stream_next_video_nal(&current_media, &nal_size);
         if (!nal_data) {
-            // End of video - log final timing
-            int64_t elapsed_ms = (esp_timer_get_time() - playback_start_time_us) / 1000;
+            // End of video stream
             int64_t video_pos_ms = current_frame * FRAME_DURATION_MS;
-            ESP_LOGI(TAG, "=== VIDEO END: elapsed=%lldms, video_pos=%lldms, frame=%d ===",
-                     elapsed_ms, video_pos_ms, current_frame);
+            ESP_LOGI(TAG, "=== VIDEO END: sync_pos=%lums, video=%lldms, frame=%d ===",
+                     (unsigned long)sync_pos_ms, video_pos_ms, current_frame);
             return true;
         }
 
         int64_t t1 = esp_timer_get_time();
 
-        // Decode frame
+        // Decode NAL - may or may not produce a frame
         uint8_t* yuv_out = NULL;
         int width = 0, height = 0;
         esp_err_t ret = video_decoder_decode(nal_data, nal_size, &yuv_out, &width, &height);
 
         int64_t t2 = esp_timer_get_time();
 
-        current_frame++;
+        // Only count as a frame if decoder actually produced output
+        if (ret == ESP_OK && yuv_out) {
+            current_frame++;
 
-        // Only display the last frame we decode (the one that catches us up)
-        if (current_frame >= expected_frame && ret == ESP_OK && yuv_out) {
-            // Convert YUV to BGR with 2x upscaling and 270° rotation
-            yuv_to_bgr_2x(yuv_out, fb_pixels, width, height);
+            // Display if this is the frame that catches us up
+            if (current_frame >= expected_frame) {
+                // Convert YUV to BGR with 2x upscaling and 270° rotation
+                yuv_to_bgr_2x(yuv_out, fb_pixels, width, height);
 
-            int64_t t3 = esp_timer_get_time();
+                int64_t t3 = esp_timer_get_time();
 
-            // Accumulate timing stats
-            timing_nal_us += (t1 - t0);
-            timing_decode_us += (t2 - t1);
-            timing_convert_us += (t3 - t2);
-            timing_frame_count++;
+                // Accumulate timing stats
+                timing_nal_us += (t1 - t0);
+                timing_decode_us += (t2 - t1);
+                timing_convert_us += (t3 - t2);
+                timing_frame_count++;
 
-            // Log every 30 frames (~3 seconds at 10fps)
-            if (timing_frame_count >= 30) {
-                // Calculate video sync info
-                int64_t elapsed_ms = (esp_timer_get_time() - playback_start_time_us) / 1000;
-                int64_t video_pos_ms = current_frame * FRAME_DURATION_MS;
-                int64_t drift_ms = video_pos_ms - elapsed_ms;
+                // Log every 30 displayed frames (~3 seconds at 10fps)
+                if (timing_frame_count >= 30) {
+                    int64_t video_pos_ms = current_frame * FRAME_DURATION_MS;
+                    int64_t av_drift_ms = video_pos_ms - (int64_t)sync_pos_ms;
 
-                ESP_LOGI(TAG, "Frame timing (avg of 30): NAL=%.1fms, Decode=%.1fms, Convert=%.1fms, Total=%.1fms",
-                         timing_nal_us / 30000.0f,
-                         timing_decode_us / 30000.0f,
-                         timing_convert_us / 30000.0f,
-                         (timing_nal_us + timing_decode_us + timing_convert_us) / 30000.0f);
-                ESP_LOGI(TAG, "Video sync: elapsed=%lldms, video_pos=%lldms, drift=%+lldms, frame=%d",
-                         elapsed_ms, video_pos_ms, drift_ms, current_frame);
-                timing_nal_us = 0;
-                timing_decode_us = 0;
-                timing_convert_us = 0;
-                timing_frame_count = 0;
+                    ESP_LOGI(TAG, "Frame timing (avg of 30): NAL=%.1fms, Decode=%.1fms, Convert=%.1fms, Total=%.1fms",
+                             timing_nal_us / 30000.0f,
+                             timing_decode_us / 30000.0f,
+                             timing_convert_us / 30000.0f,
+                             (timing_nal_us + timing_decode_us + timing_convert_us) / 30000.0f);
+                    ESP_LOGI(TAG, "A/V sync: sync_pos=%lums, video=%lldms, drift=%+lldms, frame=%d",
+                             (unsigned long)sync_pos_ms, video_pos_ms, av_drift_ms, current_frame);
+                    timing_nal_us = 0;
+                    timing_decode_us = 0;
+                    timing_convert_us = 0;
+                    timing_frame_count = 0;
+                }
             }
         }
+        // If decoder returned ESP_ERR_NOT_FINISHED, it's buffering (SPS/PPS/etc)
+        // Don't increment current_frame - no frame was produced
     }
 
     return false;  // Continue playing
@@ -448,8 +484,8 @@ void app_main(void) {
                 // Process video frame
                 video_ended = process_video_frame(fb_pixels, fb_stride, fb_height);
 
-                if (video_ended || !audio_player_is_playing()) {
-                    // Video finished
+                if (video_ended) {
+                    // Video finished - stop playback
                     stop_playback();
                     app_state = APP_STATE_MENU;
                 }
