@@ -33,7 +33,7 @@ extern esp_err_t bsp_audio_initialize(uint32_t rate);
 
 // Audio chunk for queue
 #define AUDIO_CHUNK_MAX_SIZE    4096  // Max size of a single audio chunk
-#define AUDIO_QUEUE_LENGTH      8     // Number of chunks to buffer
+#define AUDIO_QUEUE_LENGTH      16    // Number of chunks to buffer (more headroom for high FPS)
 
 typedef struct {
     uint8_t data[AUDIO_CHUNK_MAX_SIZE];

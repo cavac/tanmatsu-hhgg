@@ -200,12 +200,14 @@ static esp_err_t start_playback(video_entry_t* entry) {
     pax_background(&fb, 0);
     blit();
 
-    // Start timing AFTER pre-buffering so playback starts immediately
-    playback_start_time_us = esp_timer_get_time();
+    // Account for audio that already played during prebuffering
+    // This syncs video timing to where audio already is
+    uint32_t audio_already_played_ms = audio_player_get_position_ms();
+    playback_start_time_us = esp_timer_get_time() - (audio_already_played_ms * 1000);
     audio_end_time_us = 0;
     audio_end_position_ms = 0;
 
-    ESP_LOGI(TAG, "Playback starting");
+    ESP_LOGI(TAG, "Playback starting (audio offset: %lu ms)", (unsigned long)audio_already_played_ms);
     return ESP_OK;
 }
 
@@ -238,17 +240,20 @@ static inline uint8_t* video_buffer_slot(int idx) {
 }
 
 // Buffer one chunk from AVI file
-// Returns: 0 = buffered audio or video, 1 = EOF, -1 = video buffer full (and audio pending)
+// Returns: 0 = buffered audio or video, 1 = EOF, -1 = video buffer full, -2 = audio queue full
 static int buffer_one_chunk(void) {
     // First try to push any pending audio chunk
     if (pending_audio_size > 0) {
         if (audio_player_push_chunk(pending_audio_data, pending_audio_size) == ESP_OK) {
             pending_audio_size = 0;  // Success
+        } else {
+            // Can't push pending audio - don't read any more chunks
+            // This guarantees we never lose audio data
+            return -2;
         }
-        // If push failed, keep pending and continue - we can still read video
     }
 
-    // If video buffer is full and we have pending audio, we're truly stuck
+    // If video buffer is full
     if (video_buffered >= VIDEO_BUFFER_FRAMES) {
         return -1;  // Video buffer full
     }
@@ -264,14 +269,12 @@ static int buffer_one_chunk(void) {
     if (chunk.type == AVI_CHUNK_AUDIO) {
         // Try to push to audio queue
         if (audio_player_push_chunk(chunk.data, chunk.size) == ESP_ERR_TIMEOUT) {
-            // Queue full - save for retry (overwrite any existing pending)
+            // Queue full - save for later (pending is guaranteed empty at this point)
             if (chunk.size <= sizeof(pending_audio_data)) {
                 memcpy(pending_audio_data, chunk.data, chunk.size);
                 pending_audio_size = chunk.size;
             }
         }
-        // Always return 0 - we handled the audio (pushed or saved)
-        // This allows us to continue reading video chunks
         return 0;
     }
 
@@ -354,14 +357,19 @@ static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height
     uint8_t* frame_data = video_buffer_slot(video_read_idx);
 
     // Skip frames if we're behind (drop frames to catch up)
+    int frames_skipped = 0;
     while (frame->frame_index < expected_frame && video_buffered > 1) {
         // Drop this frame
         video_read_idx = (video_read_idx + 1) % VIDEO_BUFFER_FRAMES;
         video_buffered--;
         current_frame = frame->frame_index + 1;
+        frames_skipped++;
 
         frame = &video_frames[video_read_idx];
         frame_data = video_buffer_slot(video_read_idx);
+    }
+    if (frames_skipped > 0) {
+        ESP_LOGW(TAG, "Skipped %d video frames (behind by %d)", frames_skipped, expected_frame - current_frame);
     }
 
     int64_t t0 = esp_timer_get_time();
