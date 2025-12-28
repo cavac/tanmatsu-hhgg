@@ -73,11 +73,11 @@ static void draw_loading_screen(uint8_t* fb_pixels, int stride, int height, cons
 
     // Draw LCARS-style header
     ui_draw_lcars_bar(fb_pixels, stride, height, 0, 0, 800, 60, COLOR_ACCENT1);
-    hershey_draw_string(fb_pixels, stride, height, 100, 35, "HITCHHIKER'S GUIDE", 28, 0, 0, 0);
+    hershey_draw_string(fb_pixels, stride, height, 100, 30, "HITCHHIKER'S GUIDE", 28, 0, 0, 0);
 
     // Draw loading message centered
     int msg_len = strlen(message);
-    int msg_x = (800 - msg_len * 12) / 2;
+    int msg_x = 100; // (800 - msg_len * 12) / 2;
     hershey_draw_string(fb_pixels, stride, height, msg_x, 250, message, 24, 255, 255, 255);
 }
 
@@ -359,7 +359,7 @@ void app_main(void) {
                     app_state = APP_STATE_PRELOADING;
 
                     char msg[80];
-                    snprintf(msg, sizeof(msg), "Loading: %s", selected->display_name);
+                    snprintf(msg, sizeof(msg), "Pfrimmelizing  %s", selected->display_name);
                     draw_loading_screen(fb_pixels, fb_stride, fb_height, msg);
                     blit();
 

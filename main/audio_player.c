@@ -101,6 +101,12 @@ esp_err_t audio_player_start(preloaded_media_t* media) {
 
     xSemaphoreGive(audio_mutex);
 
+    // Enable I2S channel and amplifier for playback
+    if (i2s_tx_handle) {
+        i2s_channel_enable(i2s_tx_handle);
+    }
+    bsp_audio_set_amplifier(true);
+
     // Create audio task on Core 1
     BaseType_t result = xTaskCreatePinnedToCore(
         audio_task,
@@ -149,12 +155,14 @@ void audio_player_stop(void) {
     audio_playing = false;
     current_media = NULL;
 
-    // Disable amplifier to stop any garbage audio
-    bsp_audio_set_amplifier(false);
+    // Stop I2S DMA to prevent audio looping
+    if (i2s_tx_handle) {
+        // Disable the I2S channel - will be re-enabled on next playback
+        i2s_channel_disable(i2s_tx_handle);
+    }
 
-    // Small delay then re-enable for next playback
-    vTaskDelay(pdMS_TO_TICKS(50));
-    bsp_audio_set_amplifier(true);
+    // Turn off amplifier until next playback
+    bsp_audio_set_amplifier(false);
 
     ESP_LOGI(TAG, "Audio playback stopped");
 }

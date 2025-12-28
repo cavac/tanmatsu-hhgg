@@ -50,8 +50,8 @@ void ui_menu_draw(ui_menu_state_t* state, uint8_t* fb, int fb_stride, int fb_hei
     ui_draw_lcars_bar(fb, fb_stride, fb_height, 30, 0, screen_w - 30, HEADER_HEIGHT - 10, COLOR_ACCENT1);
 
     // Small accent bars
-    ui_fill_rect(fb, fb_stride, fb_height, 35, HEADER_HEIGHT - 8, 80, 6, COLOR_ACCENT2);
-    ui_fill_rect(fb, fb_stride, fb_height, 120, HEADER_HEIGHT - 8, 40, 6, COLOR_ACCENT3);
+    //ui_fill_rect(fb, fb_stride, fb_height, 35, HEADER_HEIGHT - 8, 80, 6, COLOR_ACCENT2);
+    //ui_fill_rect(fb, fb_stride, fb_height, 120, HEADER_HEIGHT - 8, 40, 6, COLOR_ACCENT3);
 
     // Title text
     const char* title = state->playlist ? state->playlist->title : "VIDEO PLAYER";
@@ -153,9 +153,9 @@ void ui_menu_draw(ui_menu_state_t* state, uint8_t* fb, int fb_stride, int fb_hei
                        COLOR_R(COLOR_TEXT), COLOR_G(COLOR_TEXT), COLOR_B(COLOR_TEXT));
 
     // Decorative accent bars in footer
-    ui_fill_rect(fb, fb_stride, fb_height, 550, screen_h - FOOTER_HEIGHT + 12, 60, 8, COLOR_ACCENT3);
-    ui_fill_rect(fb, fb_stride, fb_height, 620, screen_h - FOOTER_HEIGHT + 12, 30, 8, COLOR_ACCENT1);
-    ui_fill_rect(fb, fb_stride, fb_height, 660, screen_h - FOOTER_HEIGHT + 12, 100, 8, COLOR_ACCENT4);
+    //ui_fill_rect(fb, fb_stride, fb_height, 550, screen_h - FOOTER_HEIGHT + 12, 60, 8, COLOR_ACCENT3);
+    //ui_fill_rect(fb, fb_stride, fb_height, 620, screen_h - FOOTER_HEIGHT + 12, 30, 8, COLOR_ACCENT1);
+    //ui_fill_rect(fb, fb_stride, fb_height, 660, screen_h - FOOTER_HEIGHT + 12, 100, 8, COLOR_ACCENT4);
 
     state->needs_redraw = false;
 }
