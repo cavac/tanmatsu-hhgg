@@ -57,7 +57,7 @@ ffmpeg -y -i "$INPUT" \
     -an \
     -f h264 "$OUTDIR/${BASE}.h264"
 
-# Extract audio: AAC at 44.1kHz (Tanmatsu I2S native rate)
+# Extract audio: AAC at 44.1kHz (BSP I2S actual rate)
 echo "Extracting audio stream..."
 ffmpeg -y -i "$INPUT" \
     -vn \

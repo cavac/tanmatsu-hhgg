@@ -175,7 +175,12 @@ static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height
         size_t nal_size = 0;
         uint8_t* nal_data = stream_next_video_nal(&current_media, &nal_size);
         if (!nal_data) {
-            return true;  // End of video
+            // End of video - log final timing
+            int64_t elapsed_ms = (esp_timer_get_time() - playback_start_time_us) / 1000;
+            int64_t video_pos_ms = current_frame * FRAME_DURATION_MS;
+            ESP_LOGI(TAG, "=== VIDEO END: elapsed=%lldms, video_pos=%lldms, frame=%d ===",
+                     elapsed_ms, video_pos_ms, current_frame);
+            return true;
         }
 
         int64_t t1 = esp_timer_get_time();

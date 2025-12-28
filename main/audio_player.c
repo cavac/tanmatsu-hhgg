@@ -23,6 +23,9 @@ extern esp_err_t bsp_audio_initialize(uint32_t rate);
 #define AUDIO_TASK_PRIORITY     6
 #define AUDIO_TASK_CORE         1
 
+// Sample rate (BSP actual rate is 44.1kHz, will be updated from decoder)
+#define AUDIO_SAMPLE_RATE       44100
+
 // Buffer sizes
 #define PCM_BUFFER_SAMPLES      1024  // Per channel
 #define PCM_BUFFER_SIZE         (PCM_BUFFER_SAMPLES * 2 * sizeof(int16_t))  // Stereo 16-bit
@@ -39,6 +42,7 @@ static SemaphoreHandle_t audio_mutex = NULL;
 // Timing for A/V sync debugging
 static int64_t audio_start_time_us = 0;
 static uint32_t i2s_timeout_count = 0;
+static volatile uint32_t actual_sample_rate = AUDIO_SAMPLE_RATE;  // Updated from decoder
 
 // PCM buffer in internal SRAM for DMA
 static DRAM_ATTR int16_t pcm_buffer[PCM_BUFFER_SAMPLES * 2] __attribute__((aligned(16)));
@@ -57,7 +61,7 @@ esp_err_t audio_player_init(void) {
     // Try to get existing I2S handle first (BSP may have already initialized it)
     esp_err_t ret = bsp_audio_get_i2s_handle(&i2s_tx_handle);
     if (ret != ESP_OK || !i2s_tx_handle) {
-        // Not initialized yet, try to initialize
+        // Not initialized yet, try to initialize at 44.1kHz
         ESP_LOGI(TAG, "Initializing BSP audio at 44.1kHz");
         ret = bsp_audio_initialize(44100);
         if (ret != ESP_OK) {
@@ -81,7 +85,7 @@ esp_err_t audio_player_init(void) {
     // Set hardware volume to max (software handles attenuation)
     bsp_audio_set_volume(100.0f);
 
-    ESP_LOGI(TAG, "Audio player initialized (44.1kHz stereo)");
+    ESP_LOGI(TAG, "Audio player initialized");
     return ESP_OK;
 }
 
@@ -181,8 +185,8 @@ bool audio_player_is_playing(void) {
 }
 
 uint32_t audio_player_get_position_ms(void) {
-    // Convert samples to milliseconds (44.1kHz sample rate)
-    return (uint32_t)((samples_written * 1000ULL) / 44100ULL);
+    // Convert samples to milliseconds using actual decoder sample rate
+    return (uint32_t)((samples_written * 1000ULL) / actual_sample_rate);
 }
 
 void audio_player_set_volume(int volume) {
@@ -229,6 +233,12 @@ static void audio_task(void* arg) {
         goto cleanup;
     }
 
+    // Frame counting diagnostics
+    uint32_t frames_parsed = 0;
+    uint32_t frames_decoded = 0;
+    uint32_t frames_errors = 0;
+    uint32_t samples_lost = 0;  // From partial I2S writes
+
     // Main decode loop
     while (!audio_stop_requested) {
         // Get next AAC-ADTS frame from preloaded media
@@ -236,10 +246,19 @@ static void audio_task(void* arg) {
         uint8_t* aac_frame = stream_next_audio_frame(media, &frame_size);
 
         if (!aac_frame || frame_size == 0) {
-            // End of audio stream
-            ESP_LOGI(TAG, "End of audio stream");
+            // End of audio stream - log final timing and diagnostics
+            int64_t elapsed_us = esp_timer_get_time() - audio_start_time_us;
+            int64_t elapsed_ms = elapsed_us / 1000;
+            int64_t audio_pos_ms = (samples_written * 1000) / actual_sample_rate;
+            ESP_LOGI(TAG, "=== AUDIO END: elapsed=%lldms, audio_pos=%lldms, samples=%llu ===",
+                     elapsed_ms, audio_pos_ms, (unsigned long long)samples_written);
+            ESP_LOGI(TAG, "=== AUDIO STATS: parsed=%lu, decoded=%lu, errors=%lu, samples_lost=%lu ===",
+                     (unsigned long)frames_parsed, (unsigned long)frames_decoded,
+                     (unsigned long)frames_errors, (unsigned long)samples_lost);
             break;
         }
+
+        frames_parsed++;
 
         // Prepare decode input
         esp_audio_dec_in_raw_t raw = {
@@ -262,11 +281,16 @@ static void audio_task(void* arg) {
         ret = esp_aac_dec_decode(aac_decoder, &raw, &frame, &dec_info);
 
         if (ret == ESP_AUDIO_ERR_OK && frame.decoded_size > 0) {
-            // Log format info once
+            frames_decoded++;
+
+            // Log format info once and capture actual sample rate
             static bool format_logged = false;
             if (!format_logged) {
                 ESP_LOGI(TAG, "Audio format: %d Hz, %d ch, %d bits",
                          dec_info.sample_rate, dec_info.channel, dec_info.bits_per_sample);
+                if (dec_info.sample_rate > 0) {
+                    actual_sample_rate = dec_info.sample_rate;
+                }
                 format_logged = true;
             }
 
@@ -284,33 +308,36 @@ static void audio_task(void* arg) {
                 dst[i] = src[i] >> 1;
             }
 
-            // Write PCM data to I2S
+            // Write PCM data to I2S with blocking wait
+            // Use portMAX_DELAY to ensure all samples are written
             size_t bytes_written = 0;
             esp_err_t i2s_ret = i2s_channel_write(i2s_tx_handle, pcm_buffer, copy_size,
-                                                   &bytes_written, pdMS_TO_TICKS(100));
+                                                   &bytes_written, portMAX_DELAY);
 
-            if (i2s_ret == ESP_OK) {
-                // Track samples for A/V sync (16-bit stereo = 4 bytes per sample)
-                samples_written += bytes_written / 4;
-            } else if (i2s_ret == ESP_ERR_TIMEOUT) {
-                // Suppress repeated timeout warnings - just count them
-                i2s_timeout_count++;
-            } else {
-                ESP_LOGW(TAG, "I2S write error: %s", esp_err_to_name(i2s_ret));
+            samples_written += bytes_written / 4;
+
+            // Track lost samples (should be 0 with portMAX_DELAY)
+            if (bytes_written < copy_size) {
+                samples_lost += (copy_size - bytes_written) / 4;
             }
 
-            // Log audio sync debug info every ~3 seconds (based on samples at 44.1kHz)
+            if (i2s_ret != ESP_OK) {
+                i2s_timeout_count++;
+            }
+
+            // Log audio sync debug info every ~3 seconds
             static uint64_t last_debug_samples = 0;
-            if (samples_written - last_debug_samples >= 44100 * 3) {
+            if (samples_written - last_debug_samples >= actual_sample_rate * 3) {
                 int64_t elapsed_us = esp_timer_get_time() - audio_start_time_us;
                 int64_t elapsed_ms = elapsed_us / 1000;
-                int64_t audio_pos_ms = (samples_written * 1000) / 44100;
+                int64_t audio_pos_ms = (samples_written * 1000) / actual_sample_rate;
                 int64_t drift_ms = audio_pos_ms - elapsed_ms;
                 ESP_LOGI(TAG, "Audio sync: elapsed=%lldms, audio_pos=%lldms, drift=%+lldms, timeouts=%lu",
                          elapsed_ms, audio_pos_ms, drift_ms, (unsigned long)i2s_timeout_count);
                 last_debug_samples = samples_written;
             }
         } else if (ret != ESP_AUDIO_ERR_OK) {
+            frames_errors++;
             ESP_LOGW(TAG, "AAC decode error: %d (frame_size=%zu)", ret, frame_size);
             // Continue to next frame on decode error
         }
