@@ -14,8 +14,13 @@ static const char* TAG = "video_decoder";
 #define FRAME_WIDTH  300
 #define FRAME_HEIGHT 240
 
-// YUV420 buffer size: width * height * 1.5
-#define YUV_BUFFER_SIZE (FRAME_WIDTH * FRAME_HEIGHT * 3 / 2)
+// H.264 uses 16x16 macroblocks, so decoder may output padded dimensions
+// 300 -> 304 (19*16), 240 -> 240 (15*16)
+#define FRAME_WIDTH_ALIGNED  ((FRAME_WIDTH + 15) & ~15)   // 304
+#define FRAME_HEIGHT_ALIGNED ((FRAME_HEIGHT + 15) & ~15)  // 240
+
+// YUV420 buffer size: use aligned dimensions for decoder output
+#define YUV_BUFFER_SIZE (FRAME_WIDTH_ALIGNED * FRAME_HEIGHT_ALIGNED * 3 / 2)  // 109440
 
 static esp_h264_dec_handle_t decoder = NULL;
 static esp_h264_dec_param_handle_t param_handle = NULL;
@@ -97,7 +102,21 @@ esp_err_t video_decoder_decode(uint8_t* nal_data, size_t nal_size,
     if (ret == ESP_H264_ERR_OK && out_frame.outbuf && out_frame.out_size > 0) {
         // Frame decoded successfully
         size_t copy_size = out_frame.out_size;
+
+        // Log decoded size (only once)
+        static bool size_logged = false;
+        if (!size_logged) {
+            ESP_LOGI(TAG, "Decoded frame: out_size=%zu, buffer=%d", out_frame.out_size, YUV_BUFFER_SIZE);
+            size_logged = true;
+        }
+
         if (copy_size > YUV_BUFFER_SIZE) {
+            // Should not happen with properly sized buffer
+            static bool truncate_warned = false;
+            if (!truncate_warned) {
+                ESP_LOGW(TAG, "Decoded frame larger than buffer: %zu > %d (truncating)", copy_size, YUV_BUFFER_SIZE);
+                truncate_warned = true;
+            }
             copy_size = YUV_BUFFER_SIZE;
         }
         memcpy(yuv_buffer, out_frame.outbuf, copy_size);
@@ -108,6 +127,14 @@ esp_err_t video_decoder_decode(uint8_t* nal_data, size_t nal_size,
             if (esp_h264_dec_get_resolution(param_handle, &res) == ESP_H264_ERR_OK) {
                 *width = res.width;
                 *height = res.height;
+
+                // Log resolution (only once)
+                static bool res_logged = false;
+                if (!res_logged) {
+                    ESP_LOGI(TAG, "Decoded resolution: %dx%d (expected %dx%d)",
+                             res.width, res.height, FRAME_WIDTH, FRAME_HEIGHT);
+                    res_logged = true;
+                }
             } else {
                 // Default to expected size
                 *width = FRAME_WIDTH;

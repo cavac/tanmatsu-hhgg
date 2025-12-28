@@ -53,27 +53,35 @@ esp_err_t yuv_convert_init(void) {
 // Letterbox offset: center 600px video on 800px display
 #define LETTERBOX_OFFSET 100
 
+// Visible video dimensions (before 2x upscale)
+#define VISIBLE_WIDTH  300
+#define VISIBLE_HEIGHT 240
+
 // Convert YUV420 to BGR888 with 270-degree rotation and 2x upscaling
-// Input: 300x240 YUV420 -> Output: 600x480 BGR888 on 800x480 display
+// Input: YUV420 with macroblock-aligned stride (e.g., 304x240)
+// Output: 600x480 BGR888 on 800x480 display (only visible 300x240 rendered)
 esp_err_t yuv_to_bgr_2x(uint8_t* yuv_in, uint8_t* bgr_out, int width, int height) {
     if (!yuv_in || !bgr_out) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    // Use actual decoded dimensions for plane layout (may be macroblock-aligned)
+    // e.g., width=304, height=240 for 300x240 video
     uint8_t* y_plane = yuv_in;
     uint8_t* u_plane = yuv_in + width * height;
     uint8_t* v_plane = u_plane + (width * height / 4);
 
+    // Stride for UV planes (half of luma width)
     int uv_stride = width >> 1;
 
-    // Output dimensions after 2x upscale
-    int out_width = width * 2;   // 600
-    int out_height = height * 2; // 480
-    int out_stride = out_height * 3;  // 480 pixels * 3 bytes (due to 270° rotation)
+    // Output dimensions after 2x upscale of VISIBLE content
+    int out_height = VISIBLE_HEIGHT * 2; // 480
+    int out_stride = out_height * 3;     // 480 pixels * 3 bytes (due to 270° rotation)
 
     // Process row-by-row for sequential PSRAM reads
-    for (int src_y = 0; src_y < height; src_y++) {
-        uint8_t* y_row = y_plane + src_y * width;
+    // Only process VISIBLE_HEIGHT rows, using 'width' as stride for plane access
+    for (int src_y = 0; src_y < VISIBLE_HEIGHT; src_y++) {
+        uint8_t* y_row = y_plane + src_y * width;  // Use actual stride (304)
         uint8_t* u_row = u_plane + (src_y >> 1) * uv_stride;
         uint8_t* v_row = v_plane + (src_y >> 1) * uv_stride;
 
@@ -81,7 +89,8 @@ esp_err_t yuv_to_bgr_2x(uint8_t* yuv_in, uint8_t* bgr_out, int width, int height
         // With 270° rotation: src_y -> dst_x, so 2 adjacent dst_x columns
         int dst_x_base = out_height - 1 - (src_y * 2);
 
-        for (int src_x = 0; src_x < width; src_x++) {
+        // Only process VISIBLE_WIDTH columns (300), ignoring padding (cols 300-303)
+        for (int src_x = 0; src_x < VISIBLE_WIDTH; src_x++) {
             int y_val = y_row[src_x];
             int u_val = u_row[src_x >> 1] - 128;
             int v_val = v_row[src_x >> 1] - 128;
