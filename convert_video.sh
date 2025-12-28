@@ -13,7 +13,6 @@
 set -e
 
 OUTDIR="sdcard/at.cavac.hhgg"
-PLAYLIST="$OUTDIR/playlist.json"
 
 # Video settings
 WIDTH=600
@@ -78,54 +77,5 @@ ffmpeg -y -i "$INPUT" \
 FILE_SIZE=$(stat -c%s "$OUTDIR/${BASE}.avi" 2>/dev/null || stat -f%z "$OUTDIR/${BASE}.avi")
 echo "File size: $((FILE_SIZE / 1024 / 1024))MB"
 
-# Update or create playlist.json
-echo "Updating playlist..."
-if [ -f "$PLAYLIST" ]; then
-    # Add to existing playlist (requires jq)
-    if command -v jq &> /dev/null; then
-        # Check if entry already exists
-        EXISTS=$(jq --arg id "$BASE" '.videos | map(.id == $id) | any' "$PLAYLIST")
-        if [ "$EXISTS" = "true" ]; then
-            # Update existing entry
-            jq --arg id "$BASE" \
-               --arg name "$DISPLAY_NAME" \
-               --arg vfile "${BASE}.avi" \
-               --argjson dur "$DURATION" \
-               '(.videos[] | select(.id == $id)) |= {id: $id, display_name: $name, video_file: $vfile, duration_sec: $dur}' \
-               "$PLAYLIST" > "${PLAYLIST}.tmp" && mv "${PLAYLIST}.tmp" "$PLAYLIST"
-            echo "Updated existing entry: $BASE"
-        else
-            # Add new entry
-            jq --arg id "$BASE" \
-               --arg name "$DISPLAY_NAME" \
-               --arg vfile "${BASE}.avi" \
-               --argjson dur "$DURATION" \
-               '.videos += [{id: $id, display_name: $name, video_file: $vfile, duration_sec: $dur}]' \
-               "$PLAYLIST" > "${PLAYLIST}.tmp" && mv "${PLAYLIST}.tmp" "$PLAYLIST"
-            echo "Added new entry: $BASE"
-        fi
-    else
-        echo "Warning: jq not installed. Please manually add entry to playlist.json"
-    fi
-else
-    # Create new playlist
-    cat > "$PLAYLIST" << EOF
-{
-  "title": "Video Player",
-  "videos": [
-    {
-      "id": "$BASE",
-      "display_name": "$DISPLAY_NAME",
-      "video_file": "${BASE}.avi",
-      "duration_sec": $DURATION
-    }
-  ]
-}
-EOF
-    echo "Created new playlist with: $BASE"
-fi
-
 echo ""
-echo "Done! File created:"
-echo "  $OUTDIR/${BASE}.avi (MJPEG ${WIDTH}x${HEIGHT} + MP3 audio)"
-echo "  $PLAYLIST (updated)"
+echo "Done! Created: $OUTDIR/${BASE}.avi (MJPEG ${WIDTH}x${HEIGHT} + MP3 audio)"

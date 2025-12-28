@@ -129,6 +129,108 @@ static void draw_error_screen(uint8_t* fb_pixels, int stride, int height, const 
     hershey_draw_string(fb_pixels, stride, height, 50, 350, "Press ESC to return to launcher", 16, 200, 200, 200);
 }
 
+// Forward declarations for startup video
+static int prebuffer_chunks(void);
+static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height);
+
+// Play startup video (blocking - plays until video ends)
+static void play_startup_video(const char* video_path, uint8_t* fb_pixels, int fb_stride, int fb_height) {
+    ESP_LOGI(TAG, "Playing startup video: %s", video_path);
+
+    // Open AVI file
+    esp_err_t ret = avi_parser_open(&avi_parser, video_path);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Startup video not found: %s", video_path);
+        return;
+    }
+
+    const avi_info_t* avi_info = avi_parser_get_info(&avi_parser);
+    video_fps = avi_info->fps > 0 ? avi_info->fps : 15;
+    frame_duration_ms = 1000 / video_fps;
+
+    ESP_LOGI(TAG, "Startup video: %lux%lu @ %d fps",
+             (unsigned long)avi_info->width, (unsigned long)avi_info->height, video_fps);
+
+    // Allocate video buffer if needed
+    if (!video_buffer_memory) {
+        size_t buffer_size = VIDEO_BUFFER_FRAMES * VIDEO_FRAME_MAX_SIZE;
+        video_buffer_memory = heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
+        if (!video_buffer_memory) {
+            ESP_LOGE(TAG, "Failed to allocate video buffer");
+            avi_parser_close(&avi_parser);
+            return;
+        }
+    }
+
+    // Reset buffer state
+    video_write_idx = 0;
+    video_read_idx = 0;
+    video_buffered = 0;
+    next_frame_index = 0;
+    end_of_file = false;
+    current_frame = 0;
+    video_ended = false;
+    pending_audio_size = 0;
+
+    // Initialize MJPEG decoder
+    ret = mjpeg_decoder_init(avi_info->width, avi_info->height);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to init MJPEG decoder");
+        avi_parser_close(&avi_parser);
+        return;
+    }
+
+    // Start audio player
+    if (avi_info->has_audio) {
+        audio_player_start();
+    }
+
+    // Pre-buffer
+    prebuffer_chunks();
+
+    // Clear screen
+    pax_background(&fb, 0);
+    blit();
+
+    // Start timing
+    uint32_t audio_already_played_ms = audio_player_get_position_ms();
+    playback_start_time_us = esp_timer_get_time() - (audio_already_played_ms * 1000);
+
+    // Play until video ends
+    while (!video_ended) {
+        // Wait for vsync
+        if (vsync_sem) {
+            xSemaphoreTake(vsync_sem, pdMS_TO_TICKS(50));
+        }
+
+        // Process frame
+        video_ended = process_video_frame(fb_pixels, fb_stride, fb_height);
+
+        // Blit to display
+        blit();
+    }
+
+    // Wait a moment for audio to finish
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // Cleanup
+    audio_player_stop();
+    mjpeg_decoder_deinit();
+    avi_parser_close(&avi_parser);
+
+    // Reset state for next video
+    video_write_idx = 0;
+    video_read_idx = 0;
+    video_buffered = 0;
+    next_frame_index = 0;
+    end_of_file = false;
+    current_frame = 0;
+    video_ended = false;
+    pending_audio_size = 0;
+
+    ESP_LOGI(TAG, "Startup video finished");
+}
+
 // Start video playback
 static esp_err_t start_playback(video_entry_t* entry) {
     ESP_LOGI(TAG, "Starting playback: %s", entry->display_name);
@@ -482,11 +584,7 @@ void app_main(void) {
     int fb_stride = display_h_res;  // Width in pixels
     int fb_height = display_v_res;  // Height in pixels
 
-    // Draw initial loading screen
-    draw_loading_screen(fb_pixels, fb_stride, fb_height, "Initializing...");
-    blit();
-
-    // Initialize SD card
+    // Initialize SD card first (needed for startup video)
     res = sdcard_init();
     if (res != ESP_OK) {
         ESP_LOGE(TAG, "SD card init failed");
@@ -495,7 +593,7 @@ void app_main(void) {
         blit();
     }
 
-    // Initialize audio player
+    // Initialize audio player (needed for startup video)
     if (app_state != APP_STATE_ERROR) {
         res = audio_player_init();
         if (res != ESP_OK) {
@@ -503,9 +601,14 @@ void app_main(void) {
         }
     }
 
+    // Play startup video before showing UI
+    if (app_state != APP_STATE_ERROR) {
+        play_startup_video("/sd/at.cavac.hhgg/dontpanic.avi", fb_pixels, fb_stride, fb_height);
+    }
+
     // Load playlist
     if (app_state != APP_STATE_ERROR) {
-        draw_loading_screen(fb_pixels, fb_stride, fb_height, "Loading playlist...");
+        draw_loading_screen(fb_pixels, fb_stride, fb_height, "Loading...");
         blit();
 
         res = playlist_load("/sd/at.cavac.hhgg/playlist.json", &playlist);
