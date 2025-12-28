@@ -137,33 +137,33 @@ esp_err_t audio_player_start(preloaded_media_t* media) {
 }
 
 void audio_player_stop(void) {
-    if (!audio_playing && !audio_task_handle) {
-        return;
+    // If task is still running, stop it
+    if (audio_playing || audio_task_handle) {
+        ESP_LOGI(TAG, "Stopping audio playback");
+
+        // Signal task to stop
+        audio_stop_requested = true;
+
+        // Wait for task to finish (with timeout)
+        int timeout_ms = 500;
+        while (audio_playing && timeout_ms > 0) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            timeout_ms -= 10;
+        }
+
+        // Force delete if still running
+        if (audio_task_handle && audio_playing) {
+            ESP_LOGW(TAG, "Force deleting audio task");
+            vTaskDelete(audio_task_handle);
+        }
+
+        audio_task_handle = NULL;
+        audio_playing = false;
+        current_media = NULL;
     }
 
-    ESP_LOGI(TAG, "Stopping audio playback");
-
-    // Signal task to stop
-    audio_stop_requested = true;
-
-    // Wait for task to finish (with timeout)
-    int timeout_ms = 500;
-    while (audio_playing && timeout_ms > 0) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-        timeout_ms -= 10;
-    }
-
-    // Force delete if still running
-    if (audio_task_handle && audio_playing) {
-        ESP_LOGW(TAG, "Force deleting audio task");
-        vTaskDelete(audio_task_handle);
-    }
-
-    audio_task_handle = NULL;
-    audio_playing = false;
-    current_media = NULL;
-
-    // Flush I2S with silence to stop audio cleanly
+    // Always flush I2S with silence to stop any residual audio
+    // (needed even if task already finished naturally)
     if (i2s_tx_handle) {
         memset(pcm_buffer, 0, PCM_BUFFER_SIZE);
         size_t bytes_written = 0;
@@ -174,10 +174,8 @@ void audio_player_stop(void) {
         }
     }
 
-    // Turn off amplifier until next playback
+    // Always turn off amplifier
     bsp_audio_set_amplifier(false);
-
-    ESP_LOGI(TAG, "Audio playback stopped");
 }
 
 bool audio_player_is_playing(void) {
