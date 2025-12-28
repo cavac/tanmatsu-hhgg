@@ -4,11 +4,12 @@ idf_component_register(
 		"ui_draw.c"
 		"ui_menu.c"
 		"media_loader.c"
-		"video_decoder.c"
+		"mjpeg_decoder.c"
+		"avi_parser.c"
 		"audio_player.c"
-		"yuv_convert.c"
 		"usb_device.c"
 		"sdcard.c"
+		"fastopen.c"
 	PRIV_REQUIRES
 		esp_lcd
 		badge-bsp
@@ -18,7 +19,7 @@ idf_component_register(
 		esp_driver_sdspi
 		esp_driver_spi
 		esp_driver_i2s
-		esp_driver_ppa
+		esp_driver_jpeg
 		json
 		vfs
 	INCLUDE_DIRS

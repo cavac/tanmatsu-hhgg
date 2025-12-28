@@ -1,17 +1,24 @@
-// Audio Player - AAC decode and I2S output
+// Audio Player - MP3 decode and I2S output (chunk-based streaming)
 #pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
-#include "media_loader.h"
 
 // Initialize audio subsystem
 esp_err_t audio_player_init(void);
 
-// Start playing audio from a preloaded media stream
-// Starts a dedicated audio task on Core 1
-esp_err_t audio_player_start(preloaded_media_t* media);
+// Start audio playback
+// Creates audio task and queue for receiving chunks
+esp_err_t audio_player_start(void);
+
+// Push audio chunk to playback queue (called from main loop)
+// Data is copied, caller can reuse buffer after return
+// Returns ESP_OK on success, ESP_ERR_TIMEOUT if queue is full
+esp_err_t audio_player_push_chunk(const uint8_t* data, size_t size);
+
+// Signal end of audio stream (no more chunks will be pushed)
+void audio_player_end_stream(void);
 
 // Stop audio playback
 void audio_player_stop(void);

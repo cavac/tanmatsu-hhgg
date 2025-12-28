@@ -1,33 +1,41 @@
 {
-  "title": "HITCHHIKERS GUIDE V2318.2",
+  "title": "Hitchhiker's Guide",
   "videos": [
+    {
+      "id": "poetry",
+      "display_name": "poetry",
+      "video_file": "poetry.avi",
+      "duration_sec": 77
+    },
+    {
+      "id": "earth",
+      "display_name": "earth",
+      "video_file": "earth.avi",
+      "duration_sec": 5
+    },
     {
       "id": "alcohol",
       "display_name": "alcohol",
-      "video_file": "alcohol.h264",
-      "audio_file": "alcohol.aac",
+      "video_file": "alcohol.avi",
       "duration_sec": 93
     },
     {
       "id": "babelfish",
       "display_name": "babelfish",
-      "video_file": "babelfish.h264",
-      "audio_file": "babelfish.aac",
+      "video_file": "babelfish.avi",
       "duration_sec": 116
     },
     {
-      "id": "earth",
-      "display_name": "earth",
-      "video_file": "earth.h264",
-      "audio_file": "earth.aac",
-      "duration_sec": 5
+      "id": "alcohol15fps",
+      "display_name": "alcohol15fps",
+      "video_file": "alcohol15fps.avi",
+      "duration_sec": 92
     },
     {
-      "id": "poetry",
-      "display_name": "poetry",
-      "video_file": "poetry.h264",
-      "audio_file": "poetry.aac",
-      "duration_sec": 77
+      "id": "alcohol20fps",
+      "display_name": "alcohol20fps",
+      "video_file": "alcohol20fps.avi",
+      "duration_sec": 92
     }
   ]
 }

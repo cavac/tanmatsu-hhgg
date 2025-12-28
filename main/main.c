@@ -1,5 +1,5 @@
 // Video Player for Tanmatsu Badge
-// Plays pre-extracted H.264/AAC video files from SD card
+// Plays interleaved MJPEG+MP3 AVI video streamed from SD card
 
 #include <stdio.h>
 #include <stdint.h>
@@ -27,8 +27,8 @@
 #include "ui_draw.h"
 #include "ui_menu.h"
 #include "media_loader.h"
-#include "video_decoder.h"
-#include "yuv_convert.h"
+#include "mjpeg_decoder.h"
+#include "avi_parser.h"
 #include "audio_player.h"
 
 static const char* TAG = "video_player";
@@ -55,13 +55,39 @@ static SemaphoreHandle_t vsync_sem = NULL;
 static app_state_t app_state = APP_STATE_LOADING;
 static playlist_t playlist = {0};
 static ui_menu_state_t menu_state = {0};
-static preloaded_media_t current_media = {0};
+static avi_parser_t avi_parser = {0};
 static int current_frame = 0;
 static bool video_ended = false;
 
-// Video playback configuration
-#define VIDEO_FPS           10
-#define FRAME_DURATION_MS   (1000 / VIDEO_FPS)
+// Video frame ring buffer in PSRAM (stores compressed MJPEG data)
+#define VIDEO_BUFFER_FRAMES  16                // Max frames to buffer
+#define VIDEO_FRAME_MAX_SIZE (64 * 1024)       // 64KB max per compressed frame
+#define PRE_BUFFER_TIME_MS   300               // Pre-buffer 300ms of audio before starting
+
+typedef struct {
+    size_t size;
+    int frame_index;    // Which frame number this is (for sync)
+} buffered_frame_t;
+
+static uint8_t* video_buffer_memory = NULL;    // VIDEO_BUFFER_FRAMES * VIDEO_FRAME_MAX_SIZE in PSRAM
+static buffered_frame_t video_frames[VIDEO_BUFFER_FRAMES];
+static int video_write_idx = 0;                // Next slot to write
+static int video_read_idx = 0;                 // Next slot to read
+static int video_buffered = 0;                 // Frames currently buffered
+static int next_frame_index = 0;               // Frame counter for buffering
+static bool end_of_file = false;               // True when AVI EOF reached
+
+// Pending audio chunk (when queue was full and we need to retry)
+static uint8_t pending_audio_data[4096];       // Copy of audio chunk data
+static size_t pending_audio_size = 0;          // 0 = no pending chunk
+
+// Video playback - FPS read from AVI file
+static int video_fps = 30;
+static int frame_duration_ms = 33;
+
+// Forward declarations
+static int prebuffer_chunks(void);
+static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height);
 
 // I2S buffer latency compensation (samples in DMA buffer not yet played)
 // At 44.1kHz with ~2048 samples buffered, this is ~46ms
@@ -107,42 +133,79 @@ static void draw_error_screen(uint8_t* fb_pixels, int stride, int height, const 
 static esp_err_t start_playback(video_entry_t* entry) {
     ESP_LOGI(TAG, "Starting playback: %s", entry->display_name);
 
-    // Preload video and audio to PSRAM
-    esp_err_t ret = media_preload("/sd/at.cavac.hhgg", entry, &current_media);
+    // Build video file path
+    char video_path[128];
+    snprintf(video_path, sizeof(video_path), "/sd/at.cavac.hhgg/%s", entry->video_file);
+
+    // Open AVI file for streaming (uses fastopen for optimal SD card performance)
+    esp_err_t ret = avi_parser_open(&avi_parser, video_path);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to preload media: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to open AVI file: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    ESP_LOGI(TAG, "Media preloaded: video=%zu bytes, audio=%zu bytes",
-             current_media.video_size, current_media.audio_size);
+    const avi_info_t* avi_info = avi_parser_get_info(&avi_parser);
 
-    // Initialize video decoder
-    ret = video_decoder_init();
+    // Set playback FPS from AVI file
+    video_fps = avi_info->fps > 0 ? avi_info->fps : 30;
+    frame_duration_ms = 1000 / video_fps;
+
+    ESP_LOGI(TAG, "AVI: %lux%lu @ %d fps (%d ms/frame)",
+             (unsigned long)avi_info->width, (unsigned long)avi_info->height,
+             video_fps, frame_duration_ms);
+
+    // Allocate video frame buffer in PSRAM
+    if (!video_buffer_memory) {
+        size_t buffer_size = VIDEO_BUFFER_FRAMES * VIDEO_FRAME_MAX_SIZE;
+        video_buffer_memory = heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
+        if (!video_buffer_memory) {
+            ESP_LOGE(TAG, "Failed to allocate video buffer (%zu bytes)", buffer_size);
+            avi_parser_close(&avi_parser);
+            return ESP_ERR_NO_MEM;
+        }
+        ESP_LOGI(TAG, "Allocated video buffer: %zu bytes in PSRAM", buffer_size);
+    }
+
+    // Reset buffer state
+    video_write_idx = 0;
+    video_read_idx = 0;
+    video_buffered = 0;
+    next_frame_index = 0;
+    end_of_file = false;
+    current_frame = 0;
+    video_ended = false;
+    pending_audio_size = 0;
+
+    // Initialize MJPEG decoder
+    ret = mjpeg_decoder_init(avi_info->width, avi_info->height);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to init video decoder");
-        media_unload(&current_media);
+        ESP_LOGE(TAG, "Failed to init MJPEG decoder");
+        avi_parser_close(&avi_parser);
         return ret;
     }
+
+    // Start audio player (creates queue and task)
+    if (avi_info->has_audio) {
+        ret = audio_player_start();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Audio start failed, continuing without audio");
+        }
+    }
+
+    // Pre-buffer audio and video before starting playback timing
+    // This ensures audio queue is filled and we have frames ready
+    prebuffer_chunks();
 
     // Clear screen to black for letterbox bars
     pax_background(&fb, 0);
     blit();
 
-    // Start audio playback
-    ret = audio_player_start(&current_media);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Audio start failed, continuing without audio");
-    }
-
-    current_frame = 0;
-    video_ended = false;
-
-    // Reset timing state
+    // Start timing AFTER pre-buffering so playback starts immediately
     playback_start_time_us = esp_timer_get_time();
     audio_end_time_us = 0;
     audio_end_position_ms = 0;
 
+    ESP_LOGI(TAG, "Playback starting");
     return ESP_OK;
 }
 
@@ -151,121 +214,197 @@ static void stop_playback(void) {
     ESP_LOGI(TAG, "Stopping playback");
 
     audio_player_stop();
-    video_decoder_deinit();
-    media_unload(&current_media);
+    mjpeg_decoder_deinit();
+    avi_parser_close(&avi_parser);
 
+    // Reset buffer state (keep memory allocated for next video)
+    video_write_idx = 0;
+    video_read_idx = 0;
+    video_buffered = 0;
+    next_frame_index = 0;
+    end_of_file = false;
     current_frame = 0;
     video_ended = false;
 }
 
 // Timing statistics for performance debugging
-static uint32_t timing_nal_us = 0;
 static uint32_t timing_decode_us = 0;
-static uint32_t timing_convert_us = 0;
+static uint32_t timing_copy_us = 0;
 static uint32_t timing_frame_count = 0;
 
-// Process one video frame with timing synced to audio position
-static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height) {
-    // Get current audio position (master clock)
-    uint32_t audio_pos_ms = audio_player_get_position_ms();
+// Get pointer to video buffer slot
+static inline uint8_t* video_buffer_slot(int idx) {
+    return video_buffer_memory + (idx * VIDEO_FRAME_MAX_SIZE);
+}
 
-    // Handle case where audio has ended - switch to wall clock
-    static bool audio_was_playing = false;
-    bool audio_playing = audio_player_is_playing();
-
-    if (audio_was_playing && !audio_playing) {
-        // Audio just ended - record the transition point
-        audio_end_time_us = esp_timer_get_time();
-        audio_end_position_ms = audio_pos_ms;
-        ESP_LOGI(TAG, "Audio ended at %lums, switching to wall clock", (unsigned long)audio_pos_ms);
-    }
-    audio_was_playing = audio_playing;
-
-    // Calculate sync position - use audio if playing, else wall clock continuation
-    uint32_t sync_pos_ms;
-    if (audio_playing) {
-        sync_pos_ms = audio_pos_ms;
-    } else if (audio_end_time_us > 0) {
-        // Continue from where audio left off using wall clock
-        int64_t since_audio_end_us = esp_timer_get_time() - audio_end_time_us;
-        sync_pos_ms = audio_end_position_ms + (uint32_t)(since_audio_end_us / 1000);
-    } else {
-        // Fallback to wall clock from start
-        sync_pos_ms = (uint32_t)((esp_timer_get_time() - playback_start_time_us) / 1000);
+// Buffer one chunk from AVI file
+// Returns: 0 = buffered audio or video, 1 = EOF, -1 = video buffer full (and audio pending)
+static int buffer_one_chunk(void) {
+    // First try to push any pending audio chunk
+    if (pending_audio_size > 0) {
+        if (audio_player_push_chunk(pending_audio_data, pending_audio_size) == ESP_OK) {
+            pending_audio_size = 0;  // Success
+        }
+        // If push failed, keep pending and continue - we can still read video
     }
 
-    int expected_frame = (int)(sync_pos_ms / FRAME_DURATION_MS);
-
-    // If we're ahead of schedule, don't decode a new frame yet
-    if (current_frame > expected_frame) {
-        return false;  // Wait for time to catch up
+    // If video buffer is full and we have pending audio, we're truly stuck
+    if (video_buffered >= VIDEO_BUFFER_FRAMES) {
+        return -1;  // Video buffer full
     }
 
-    // Decode NALs until we have enough frames to catch up
-    // NOTE: Only increment current_frame when decoder outputs a frame, not for every NAL
-    while (current_frame < expected_frame) {
-        int64_t t0 = esp_timer_get_time();
+    avi_chunk_t chunk;
+    esp_err_t ret = avi_parser_next_chunk(&avi_parser, &chunk);
 
-        size_t nal_size = 0;
-        uint8_t* nal_data = stream_next_video_nal(&current_media, &nal_size);
-        if (!nal_data) {
-            // End of video stream
-            int64_t video_pos_ms = current_frame * FRAME_DURATION_MS;
-            ESP_LOGI(TAG, "=== VIDEO END: sync_pos=%lums, video=%lldms, frame=%d ===",
-                     (unsigned long)sync_pos_ms, video_pos_ms, current_frame);
-            return true;
+    if (ret != ESP_OK || chunk.type == AVI_CHUNK_END) {
+        end_of_file = true;
+        return 1;  // EOF
+    }
+
+    if (chunk.type == AVI_CHUNK_AUDIO) {
+        // Try to push to audio queue
+        if (audio_player_push_chunk(chunk.data, chunk.size) == ESP_ERR_TIMEOUT) {
+            // Queue full - save for retry (overwrite any existing pending)
+            if (chunk.size <= sizeof(pending_audio_data)) {
+                memcpy(pending_audio_data, chunk.data, chunk.size);
+                pending_audio_size = chunk.size;
+            }
+        }
+        // Always return 0 - we handled the audio (pushed or saved)
+        // This allows us to continue reading video chunks
+        return 0;
+    }
+
+    if (chunk.type == AVI_CHUNK_VIDEO) {
+        // Copy to video ring buffer
+        if (chunk.size > VIDEO_FRAME_MAX_SIZE) {
+            ESP_LOGW(TAG, "Video frame too large: %zu > %d, skipping", chunk.size, VIDEO_FRAME_MAX_SIZE);
+            next_frame_index++;
+            return 0;
         }
 
-        int64_t t1 = esp_timer_get_time();
+        uint8_t* dest = video_buffer_slot(video_write_idx);
+        memcpy(dest, chunk.data, chunk.size);
+        video_frames[video_write_idx].size = chunk.size;
+        video_frames[video_write_idx].frame_index = next_frame_index++;
 
-        // Decode NAL - may or may not produce a frame
-        uint8_t* yuv_out = NULL;
-        int width = 0, height = 0;
-        esp_err_t ret = video_decoder_decode(nal_data, nal_size, &yuv_out, &width, &height);
+        video_write_idx = (video_write_idx + 1) % VIDEO_BUFFER_FRAMES;
+        video_buffered++;
+        return 0;
+    }
+
+    // Unknown chunk type, skip
+    return 0;
+}
+
+// Pre-buffer audio and video before starting playback
+// Returns number of video frames buffered
+static int prebuffer_chunks(void) {
+    int target_frames = (PRE_BUFFER_TIME_MS * video_fps) / 1000;
+    if (target_frames < 3) target_frames = 3;  // Minimum 3 frames
+    if (target_frames > VIDEO_BUFFER_FRAMES - 2) target_frames = VIDEO_BUFFER_FRAMES - 2;
+
+    ESP_LOGI(TAG, "Pre-buffering %d frames (%dms at %dfps)...", target_frames, PRE_BUFFER_TIME_MS, video_fps);
+
+    while (video_buffered < target_frames && !end_of_file) {
+        int result = buffer_one_chunk();
+        if (result == 1) break;  // EOF
+        // result == -1 shouldn't happen since we check video_buffered < target
+    }
+
+    ESP_LOGI(TAG, "Pre-buffered %d video frames", video_buffered);
+    return video_buffered;
+}
+
+// Process video frame with wall clock sync
+static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height) {
+    // Read chunks to maintain buffers
+    // Higher FPS needs more chunks per call to keep up
+    int chunks_read = 0;
+    int max_chunks = 8;  // Enough for ~2-3 video frames worth of data
+    while (video_buffered < VIDEO_BUFFER_FRAMES && !end_of_file && chunks_read < max_chunks) {
+        int result = buffer_one_chunk();
+        if (result != 0) break;  // EOF or video buffer full
+        chunks_read++;
+    }
+
+    // Check for end of video
+    if (video_buffered == 0 && end_of_file) {
+        audio_player_end_stream();
+        ESP_LOGI(TAG, "=== VIDEO END: frame=%d ===", current_frame);
+        return true;
+    }
+
+    // Calculate which frame should be displayed based on wall clock
+    uint32_t elapsed_ms = (uint32_t)((esp_timer_get_time() - playback_start_time_us) / 1000);
+    int expected_frame = (int)(elapsed_ms / frame_duration_ms);
+
+    // If we're ahead of schedule, wait
+    if (current_frame > expected_frame) {
+        return false;
+    }
+
+    // No frames buffered? Wait for more
+    if (video_buffered == 0) {
+        return false;
+    }
+
+    // Get the next buffered frame
+    buffered_frame_t* frame = &video_frames[video_read_idx];
+    uint8_t* frame_data = video_buffer_slot(video_read_idx);
+
+    // Skip frames if we're behind (drop frames to catch up)
+    while (frame->frame_index < expected_frame && video_buffered > 1) {
+        // Drop this frame
+        video_read_idx = (video_read_idx + 1) % VIDEO_BUFFER_FRAMES;
+        video_buffered--;
+        current_frame = frame->frame_index + 1;
+
+        frame = &video_frames[video_read_idx];
+        frame_data = video_buffer_slot(video_read_idx);
+    }
+
+    int64_t t0 = esp_timer_get_time();
+
+    // Decode MJPEG frame
+    uint8_t* bgr_out = NULL;
+    int width = 0, height = 0;
+    esp_err_t ret = mjpeg_decoder_decode(frame_data, frame->size, &bgr_out, &width, &height);
+
+    // Consume the frame from buffer
+    video_read_idx = (video_read_idx + 1) % VIDEO_BUFFER_FRAMES;
+    video_buffered--;
+
+    int64_t t1 = esp_timer_get_time();
+
+    if (ret == ESP_OK && bgr_out) {
+        current_frame = frame->frame_index + 1;
+
+        // Copy to framebuffer
+        mjpeg_copy_to_framebuffer(bgr_out, fb_pixels, width, height, 800);
 
         int64_t t2 = esp_timer_get_time();
 
-        // Only count as a frame if decoder actually produced output
-        if (ret == ESP_OK && yuv_out) {
-            current_frame++;
+        // Timing stats
+        timing_decode_us += (t1 - t0);
+        timing_copy_us += (t2 - t1);
+        timing_frame_count++;
 
-            // Display if this is the frame that catches us up
-            if (current_frame >= expected_frame) {
-                // Convert YUV to BGR with 2x upscaling and 270° rotation
-                yuv_to_bgr_2x(yuv_out, fb_pixels, width, height);
+        if (timing_frame_count >= 30) {
+            uint32_t audio_pos = audio_player_get_position_ms();
+            int64_t video_pos_ms = current_frame * frame_duration_ms;
 
-                int64_t t3 = esp_timer_get_time();
-
-                // Accumulate timing stats
-                timing_nal_us += (t1 - t0);
-                timing_decode_us += (t2 - t1);
-                timing_convert_us += (t3 - t2);
-                timing_frame_count++;
-
-                // Log every 30 displayed frames (~3 seconds at 10fps)
-                if (timing_frame_count >= 30) {
-                    int64_t video_pos_ms = current_frame * FRAME_DURATION_MS;
-                    int64_t av_drift_ms = video_pos_ms - (int64_t)sync_pos_ms;
-
-                    ESP_LOGI(TAG, "Frame timing (avg of 30): NAL=%.1fms, Decode=%.1fms, Convert=%.1fms, Total=%.1fms",
-                             timing_nal_us / 30000.0f,
-                             timing_decode_us / 30000.0f,
-                             timing_convert_us / 30000.0f,
-                             (timing_nal_us + timing_decode_us + timing_convert_us) / 30000.0f);
-                    ESP_LOGI(TAG, "A/V sync: sync_pos=%lums, video=%lldms, drift=%+lldms, frame=%d",
-                             (unsigned long)sync_pos_ms, video_pos_ms, av_drift_ms, current_frame);
-                    timing_nal_us = 0;
-                    timing_decode_us = 0;
-                    timing_convert_us = 0;
-                    timing_frame_count = 0;
-                }
-            }
+            ESP_LOGI(TAG, "Timing (avg 30): Decode=%.1fms Copy=%.1fms | Buf=%d",
+                     timing_decode_us / 30000.0f, timing_copy_us / 30000.0f, video_buffered);
+            ESP_LOGI(TAG, "Sync: wall=%lums audio=%lums video=%lldms frame=%d",
+                     (unsigned long)elapsed_ms, (unsigned long)audio_pos, video_pos_ms, current_frame);
+            timing_decode_us = 0;
+            timing_copy_us = 0;
+            timing_frame_count = 0;
         }
-        // If decoder returned ESP_ERR_NOT_FINISHED, it's buffering (SPS/PPS/etc)
-        // Don't increment current_frame - no frame was produced
     }
 
-    return false;  // Continue playing
+    return false;
 }
 
 void app_main(void) {
@@ -346,14 +485,6 @@ void app_main(void) {
         app_state = APP_STATE_ERROR;
         draw_error_screen(fb_pixels, fb_stride, fb_height, "SD card not found");
         blit();
-    }
-
-    // Initialize YUV converter
-    if (app_state != APP_STATE_ERROR) {
-        res = yuv_convert_init();
-        if (res != ESP_OK) {
-            ESP_LOGW(TAG, "YUV converter init warning (software fallback available)");
-        }
     }
 
     // Initialize audio player

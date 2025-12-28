@@ -14,7 +14,6 @@ managed_components
 .IDF_PATH
 .IDF_TOOLS_PATH
 shell.nix
-sdkconfig*
 .submodules_update_done
 badgelink
 sdkconfig_*

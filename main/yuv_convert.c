@@ -145,3 +145,49 @@ esp_err_t yuv_to_bgr_2x(uint8_t* yuv_in, uint8_t* bgr_out, int width, int height
 void yuv_convert_deinit(void) {
     ESP_LOGI(TAG, "YUV converter deinitialized");
 }
+
+// Copy BGR888 to framebuffer with 270-degree rotation
+// For 270° rotation: src(x,y) -> dst(height-1-y, x)
+// With letterboxing: centered horizontally on display
+esp_err_t bgr_rotate_270(uint8_t* bgr_in, uint8_t* fb_out,
+                          int src_width, int src_height, int display_width) {
+    if (!bgr_in || !fb_out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Calculate letterbox offset to center content
+    // For 600x480 on 800px wide display: offset = (800 - 600) / 2 = 100
+    int letterbox_offset = (display_width - src_width) / 2;
+    if (letterbox_offset < 0) letterbox_offset = 0;
+
+    // Output dimensions after rotation
+    // src 600x480 becomes dst 480x600 (width becomes height)
+    int out_height = src_width;  // 600 becomes vertical dimension
+    int out_stride = src_height * 3;  // 480 pixels * 3 bytes per row
+
+    // Process row by row for sequential memory access on source
+    for (int src_y = 0; src_y < src_height; src_y++) {
+        uint8_t* src_row = bgr_in + src_y * src_width * 3;
+
+        // After 270° rotation: src_y maps to dst_x (column in output)
+        // dst_x goes from (height-1) down to 0 as src_y increases
+        int dst_x = src_height - 1 - src_y;
+
+        for (int src_x = 0; src_x < src_width; src_x++) {
+            // After 270° rotation: src_x maps to dst_y (row in output)
+            // With letterbox offset applied
+            int dst_y = src_x + letterbox_offset;
+
+            // Calculate destination offset
+            // dst layout: row-major, each row is out_stride bytes
+            uint8_t* dst = fb_out + dst_y * out_stride + dst_x * 3;
+
+            // Copy BGR pixel
+            dst[0] = src_row[src_x * 3 + 0];  // B
+            dst[1] = src_row[src_x * 3 + 1];  // G
+            dst[2] = src_row[src_x * 3 + 2];  // R
+        }
+    }
+
+    return ESP_OK;
+}
