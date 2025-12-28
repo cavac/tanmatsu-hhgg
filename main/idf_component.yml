@@ -3,3 +3,5 @@ dependencies:
   badgeteam/badge-bsp: ">=0.4.0"
   nicolaielectronics/tanmatsu-wifi: ">=1.0.1"
   robotman2412/pax-gfx: ">=2.0.3"
+  espressif/esp_h264: ">=1.1.0"
+  espressif/esp_audio_codec: ">=2.3.0"

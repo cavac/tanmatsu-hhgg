@@ -1,7 +1,12 @@
 idf_component_register(
 	SRCS
 		"main.c"
-		"renderer.c"
+		"ui_draw.c"
+		"ui_menu.c"
+		"media_loader.c"
+		"video_decoder.c"
+		"audio_player.c"
+		"yuv_convert.c"
 		"usb_device.c"
 		"sdcard.c"
 	PRIV_REQUIRES
@@ -12,6 +17,9 @@ idf_component_register(
 		esp_driver_sdmmc
 		esp_driver_sdspi
 		esp_driver_spi
+		esp_driver_i2s
+		esp_driver_ppa
+		json
 		vfs
 	INCLUDE_DIRS
 		"."

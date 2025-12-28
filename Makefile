@@ -161,7 +161,7 @@ badgelink:
 .PHONY: install
 install: build
 install:
-	cd badgelink/tools; ./badgelink.sh appfs upload application "TheCube" 0 ../../build/tanmatsu/application.bin
+	cd badgelink/tools; ./badgelink.sh appfs upload application "Hitchhikers Guide" 0 ../../build/tanmatsu/application.bin
 
 .PHONY: run
 run:
