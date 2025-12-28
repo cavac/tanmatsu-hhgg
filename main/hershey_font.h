@@ -39,39 +39,57 @@ static inline void hershey_set_pixel(uint8_t* fb, int fb_stride, int fb_height,
 
 // Draw a line using Bresenham's algorithm
 // All coordinates are in SCREEN space (hershey_set_pixel does the rotation)
+// thickness: 1 = normal, 2+ = bold (draws parallel lines)
+static inline void hershey_draw_line_thick(uint8_t* fb, int fb_stride, int fb_height,
+                                           int x0, int y0, int x1, int y1,
+                                           uint8_t r, uint8_t g, uint8_t b, int thickness) {
+    // Draw multiple parallel lines for thickness
+    for (int t = 0; t < thickness; t++) {
+        int ox = t;  // Offset in X
+        int oy = 0;
+
+        int lx0 = x0 + ox, ly0 = y0 + oy;
+        int lx1 = x1 + ox, ly1 = y1 + oy;
+
+        int dx = abs(lx1 - lx0);
+        int dy = abs(ly1 - ly0);
+        int sx = (lx0 < lx1) ? 1 : -1;
+        int sy = (ly0 < ly1) ? 1 : -1;
+        int err = dx - dy;
+
+        while (1) {
+            hershey_set_pixel(fb, fb_stride, fb_height, lx0, ly0, r, g, b);
+
+            if (lx0 == lx1 && ly0 == ly1) break;
+
+            int e2 = 2 * err;
+            if (e2 > -dy) {
+                err -= dy;
+                lx0 += sx;
+            }
+            if (e2 < dx) {
+                err += dx;
+                ly0 += sy;
+            }
+        }
+    }
+}
+
+// Normal thickness line (backwards compatible)
 static inline void hershey_draw_line(uint8_t* fb, int fb_stride, int fb_height,
                                      int x0, int y0, int x1, int y1,
                                      uint8_t r, uint8_t g, uint8_t b) {
-    int dx = abs(x1 - x0);
-    int dy = abs(y1 - y0);
-    int sx = (x0 < x1) ? 1 : -1;
-    int sy = (y0 < y1) ? 1 : -1;
-    int err = dx - dy;
-
-    while (1) {
-        hershey_set_pixel(fb, fb_stride, fb_height, x0, y0, r, g, b);
-
-        if (x0 == x1 && y0 == y1) break;
-
-        int e2 = 2 * err;
-        if (e2 > -dy) {
-            err -= dy;
-            x0 += sx;
-        }
-        if (e2 < dx) {
-            err += dx;
-            y0 += sy;
-        }
-    }
+    hershey_draw_line_thick(fb, fb_stride, fb_height, x0, y0, x1, y1, r, g, b, 1);
 }
 
 // Draw a single character from the Hershey font
 // screen_x, screen_y: SCREEN coordinates (as user sees them, y=0 at top)
 // font_height: desired font height in pixels
+// thickness: line thickness (1 = normal, 2+ = bold)
 // Returns: scaled character width for horizontal advance
-static inline int hershey_draw_char(uint8_t* fb, int fb_stride, int fb_height,
-                                    int screen_x, int screen_y, char c, float font_height,
-                                    uint8_t r, uint8_t g, uint8_t b) {
+static inline int hershey_draw_char_ex(uint8_t* fb, int fb_stride, int fb_height,
+                                       int screen_x, int screen_y, char c, float font_height,
+                                       uint8_t r, uint8_t g, uint8_t b, int thickness) {
     float scale = font_height / HERSHEY_BASE_HEIGHT;
     // Map ASCII to array index (ASCII 32-126 -> index 0-94)
     int idx = (int)c - 32;
@@ -88,7 +106,7 @@ static inline int hershey_draw_char(uint8_t* fb, int fb_stride, int fb_height,
         return (int)(char_width * scale);
     }
 
-    int start_y = screen_y; // fb_height - 1 - screen_y;
+    int start_y = screen_y;
 
     // Process vertex pairs
     int pen_down = 0;
@@ -109,14 +127,14 @@ static inline int hershey_draw_char(uint8_t* fb, int fb_stride, int fb_height,
         int gx = (int)(vx * scale);
         int gy = (int)((HERSHEY_BASE_HEIGHT - vy) * scale);
 
-        // Apply coordinates - only starting position is inverted, glyph offsets are normal
+        // Apply coordinates
         int sx = screen_x + gx;
         int sy = start_y + gy;
 
         if (pen_down) {
-            hershey_draw_line(fb, fb_stride, fb_height,
-                              prev_sx, prev_sy, sx, sy,
-                              r, g, b);
+            hershey_draw_line_thick(fb, fb_stride, fb_height,
+                                    prev_sx, prev_sy, sx, sy,
+                                    r, g, b, thickness);
         }
 
         prev_sx = sx;
@@ -127,16 +145,38 @@ static inline int hershey_draw_char(uint8_t* fb, int fb_stride, int fb_height,
     return (int)(char_width * scale);
 }
 
-// Draw a string using the Hershey font
-// screen_x, screen_y: screen position (top-left of first character, same as pax_draw_text)
+// Normal weight character (backwards compatible)
+static inline int hershey_draw_char(uint8_t* fb, int fb_stride, int fb_height,
+                                    int screen_x, int screen_y, char c, float font_height,
+                                    uint8_t r, uint8_t g, uint8_t b) {
+    return hershey_draw_char_ex(fb, fb_stride, fb_height, screen_x, screen_y, c, font_height, r, g, b, 1);
+}
+
+// Draw a string using the Hershey font with configurable thickness
+// screen_x, screen_y: screen position (top-left of first character)
 // font_height: desired font height in pixels
+// thickness: line thickness (1 = normal, 2+ = bold)
+static inline void hershey_draw_string_ex(uint8_t* fb, int fb_stride, int fb_height,
+                                          int screen_x, int screen_y, const char* str, float font_height,
+                                          uint8_t r, uint8_t g, uint8_t b, int thickness) {
+    while (*str) {
+        screen_x += hershey_draw_char_ex(fb, fb_stride, fb_height, screen_x, screen_y, *str, font_height, r, g, b, thickness);
+        str++;
+    }
+}
+
+// Normal weight string (backwards compatible)
 static inline void hershey_draw_string(uint8_t* fb, int fb_stride, int fb_height,
                                        int screen_x, int screen_y, const char* str, float font_height,
                                        uint8_t r, uint8_t g, uint8_t b) {
-    while (*str) {
-        screen_x += hershey_draw_char(fb, fb_stride, fb_height, screen_x, screen_y, *str, font_height, r, g, b);
-        str++;
-    }
+    hershey_draw_string_ex(fb, fb_stride, fb_height, screen_x, screen_y, str, font_height, r, g, b, 1);
+}
+
+// Bold string (thickness = 2)
+static inline void hershey_draw_string_bold(uint8_t* fb, int fb_stride, int fb_height,
+                                            int screen_x, int screen_y, const char* str, float font_height,
+                                            uint8_t r, uint8_t g, uint8_t b) {
+    hershey_draw_string_ex(fb, fb_stride, fb_height, screen_x, screen_y, str, font_height, r, g, b, 2);
 }
 
 // Calculate the width of a string without drawing it

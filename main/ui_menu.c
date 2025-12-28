@@ -53,10 +53,10 @@ void ui_menu_draw(ui_menu_state_t* state, uint8_t* fb, int fb_stride, int fb_hei
     //ui_fill_rect(fb, fb_stride, fb_height, 35, HEADER_HEIGHT - 8, 80, 6, COLOR_ACCENT2);
     //ui_fill_rect(fb, fb_stride, fb_height, 120, HEADER_HEIGHT - 8, 40, 6, COLOR_ACCENT3);
 
-    // Title text
+    // Title text (black on orange bar, bold)
     const char* title = state->playlist ? state->playlist->title : "VIDEO PLAYER";
-    hershey_draw_string(fb, fb_stride, fb_height, 180, 15, title, 32,
-                        COLOR_R(COLOR_TEXT), COLOR_G(COLOR_TEXT), COLOR_B(COLOR_TEXT));
+    hershey_draw_string_bold(fb, fb_stride, fb_height, 180, 15, title, 32,
+                             COLOR_R(COLOR_BG), COLOR_G(COLOR_BG), COLOR_B(COLOR_BG));
 
     // === Draw menu items ===
     int menu_start_y = HEADER_HEIGHT + 20;
@@ -99,22 +99,23 @@ void ui_menu_draw(ui_menu_state_t* state, uint8_t* fb, int fb_stride, int fb_hei
                              6, ITEM_HEIGHT - 10, COLOR_ACCENT1);
             }
 
-            // Draw video name
-            uint32_t text_color = is_selected ? COLOR_BG : COLOR_TEXT;
-            hershey_draw_string(fb, fb_stride, fb_height,
-                               menu_item_x + 45, item_y + 20,
-                               entry->display_name, 28,
-                               COLOR_R(text_color), COLOR_G(text_color), COLOR_B(text_color));
+            // Draw video name (black on colored background, bold)
+            uint32_t text_color = COLOR_BG;  // Always black for readability
+            hershey_draw_string_bold(fb, fb_stride, fb_height,
+                                     menu_item_x + 45, item_y + 20,
+                                     entry->display_name, 28,
+                                     COLOR_R(text_color), COLOR_G(text_color), COLOR_B(text_color));
 
-            // Draw duration
+            // Draw duration (dark gray on colored background)
             char duration_str[16];
             ui_format_duration(entry->duration_sec, duration_str, sizeof(duration_str));
             int duration_width = hershey_string_width(duration_str, 22);
+            uint32_t duration_color = 0x333333;  // Dark gray for contrast
             hershey_draw_string(fb, fb_stride, fb_height,
                                menu_item_x + menu_item_w - duration_width - 25,
                                item_y + 25,
                                duration_str, 22,
-                               COLOR_R(COLOR_DIM), COLOR_G(COLOR_DIM), COLOR_B(COLOR_DIM));
+                               COLOR_R(duration_color), COLOR_G(duration_color), COLOR_B(duration_color));
         }
 
         // Draw scroll indicators if needed
@@ -144,13 +145,13 @@ void ui_menu_draw(ui_menu_state_t* state, uint8_t* fb, int fb_stride, int fb_hei
     ui_draw_lcars_bar(fb, fb_stride, fb_height, 30, screen_h - FOOTER_HEIGHT + 10,
                       screen_w - 30, FOOTER_HEIGHT - 10, COLOR_ACCENT2);
 
-    // Control hints
-    hershey_draw_string(fb, fb_stride, fb_height, 180, screen_h - 35,
-                       "SELECT: ENTER", 18,
-                       COLOR_R(COLOR_TEXT), COLOR_G(COLOR_TEXT), COLOR_B(COLOR_TEXT));
-    hershey_draw_string(fb, fb_stride, fb_height, 380, screen_h - 35,
-                       "EXIT: ESC", 18,
-                       COLOR_R(COLOR_TEXT), COLOR_G(COLOR_TEXT), COLOR_B(COLOR_TEXT));
+    // Control hints (black on mauve bar, bold)
+    hershey_draw_string_bold(fb, fb_stride, fb_height, 180, screen_h - 35,
+                             "SELECT: ENTER", 18,
+                             COLOR_R(COLOR_BG), COLOR_G(COLOR_BG), COLOR_B(COLOR_BG));
+    hershey_draw_string_bold(fb, fb_stride, fb_height, 380, screen_h - 35,
+                             "EXIT: ESC", 18,
+                             COLOR_R(COLOR_BG), COLOR_G(COLOR_BG), COLOR_B(COLOR_BG));
 
     // Decorative accent bars in footer
     //ui_fill_rect(fb, fb_stride, fb_height, 550, screen_h - FOOTER_HEIGHT + 12, 60, 8, COLOR_ACCENT3);
