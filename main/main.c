@@ -63,6 +63,9 @@ static bool video_ended = false;
 #define VIDEO_FPS           10
 #define FRAME_DURATION_MS   (1000 / VIDEO_FPS)
 
+// Playback timing - use elapsed time as master clock
+static int64_t playback_start_time_us = 0;
+
 void blit(void) {
     bsp_display_blit(0, 0, display_h_res, display_v_res, pax_buf_get_pixels(&fb));
 }
@@ -129,6 +132,9 @@ static esp_err_t start_playback(video_entry_t* entry) {
     current_frame = 0;
     video_ended = false;
 
+    // Record playback start time for frame timing
+    playback_start_time_us = esp_timer_get_time();
+
     return ESP_OK;
 }
 
@@ -150,19 +156,19 @@ static uint32_t timing_decode_us = 0;
 static uint32_t timing_convert_us = 0;
 static uint32_t timing_frame_count = 0;
 
-// Process one video frame with A/V sync
+// Process one video frame with timing based on elapsed time
 static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height) {
-    // Get audio position for A/V sync
-    uint32_t audio_ms = audio_player_get_position_ms();
-    int expected_frame = audio_ms / FRAME_DURATION_MS;
+    // Calculate expected frame from elapsed time (10 FPS = 100ms per frame)
+    int64_t elapsed_us = esp_timer_get_time() - playback_start_time_us;
+    int expected_frame = (int)(elapsed_us / (FRAME_DURATION_MS * 1000));
 
-    // If we're ahead of audio, don't decode a new frame yet
+    // If we're ahead of schedule, don't decode a new frame yet
     if (current_frame > expected_frame) {
-        return false;  // Wait for audio to catch up
+        return false;  // Wait for time to catch up
     }
 
-    // We need to decode frame(s) to catch up to audio
-    // Skip frames if way behind (more than 1 frame)
+    // We need to decode frame(s) to catch up to schedule
+    // Skip frames if behind (decode without display)
     while (current_frame < expected_frame) {
         int64_t t0 = esp_timer_get_time();
 
@@ -185,8 +191,8 @@ static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height
 
         // Only display the last frame we decode (the one that catches us up)
         if (current_frame >= expected_frame && ret == ESP_OK && yuv_out) {
-            // Convert YUV to BGR and write to framebuffer (includes 270° rotation)
-            yuv_to_bgr(yuv_out, fb_pixels, width, height);
+            // Convert YUV to BGR with 2x upscaling and 270° rotation
+            yuv_to_bgr_2x(yuv_out, fb_pixels, width, height);
 
             int64_t t3 = esp_timer_get_time();
 
@@ -198,11 +204,18 @@ static bool process_video_frame(uint8_t* fb_pixels, int fb_stride, int fb_height
 
             // Log every 30 frames (~3 seconds at 10fps)
             if (timing_frame_count >= 30) {
+                // Calculate video sync info
+                int64_t elapsed_ms = (esp_timer_get_time() - playback_start_time_us) / 1000;
+                int64_t video_pos_ms = current_frame * FRAME_DURATION_MS;
+                int64_t drift_ms = video_pos_ms - elapsed_ms;
+
                 ESP_LOGI(TAG, "Frame timing (avg of 30): NAL=%.1fms, Decode=%.1fms, Convert=%.1fms, Total=%.1fms",
                          timing_nal_us / 30000.0f,
                          timing_decode_us / 30000.0f,
                          timing_convert_us / 30000.0f,
                          (timing_nal_us + timing_decode_us + timing_convert_us) / 30000.0f);
+                ESP_LOGI(TAG, "Video sync: elapsed=%lldms, video_pos=%lldms, drift=%+lldms, frame=%d",
+                         elapsed_ms, video_pos_ms, drift_ms, current_frame);
                 timing_nal_us = 0;
                 timing_decode_us = 0;
                 timing_convert_us = 0;

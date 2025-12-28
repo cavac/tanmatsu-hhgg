@@ -43,19 +43,16 @@ DURATION=$(ffprobe -v error -show_entries format=duration \
     -of default=noprint_wrappers=1:nokey=1 "$INPUT" | cut -d. -f1)
 echo "Duration: ${DURATION}s"
 
-# Extract video: H.264 Baseline Profile, 600x480 (letterboxed on 800x480 display), 10fps
-# Optimized for ESP32-P4 software decode:
-#   - 600kbps bitrate (lower = faster decode)
-#   - GOP of 15 frames (I-frame every 1.5s = smaller I-frames)
-#   - CBR-ish encoding for consistent decode times
+# Extract video: H.264 Baseline Profile, 300x240 (will be 2x upscaled to 600x480), 10fps
+# Half resolution for faster decode, upscaled on device
 echo "Extracting video stream..."
 ffmpeg -y -i "$INPUT" \
     -c:v libx264 -profile:v baseline -level 3.0 \
     -preset veryslow -tune fastdecode \
-    -vf "scale=600:480:force_original_aspect_ratio=decrease,pad=600:480:(ow-iw)/2:(oh-ih)/2,format=yuv420p" \
+    -vf "scale=300:240:force_original_aspect_ratio=decrease,pad=300:240:(ow-iw)/2:(oh-ih)/2,format=yuv420p" \
     -x264opts "slices=1:no-deblock" \
     -g 15 -keyint_min 15 \
-    -b:v 600k -maxrate 700k -bufsize 600k \
+    -b:v 300k -maxrate 400k -bufsize 300k \
     -r 10 \
     -an \
     -f h264 "$OUTDIR/${BASE}.h264"

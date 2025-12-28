@@ -4,6 +4,7 @@
 #include "audio_player.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -34,6 +35,10 @@ static volatile bool audio_stop_requested = false;
 static volatile uint64_t samples_written = 0;
 static preloaded_media_t* current_media = NULL;
 static SemaphoreHandle_t audio_mutex = NULL;
+
+// Timing for A/V sync debugging
+static int64_t audio_start_time_us = 0;
+static uint32_t i2s_timeout_count = 0;
 
 // PCM buffer in internal SRAM for DMA
 static DRAM_ATTR int16_t pcm_buffer[PCM_BUFFER_SAMPLES * 2] __attribute__((aligned(16)));
@@ -98,6 +103,8 @@ esp_err_t audio_player_start(preloaded_media_t* media) {
     samples_written = 0;
     audio_stop_requested = false;
     audio_playing = true;
+    audio_start_time_us = esp_timer_get_time();
+    i2s_timeout_count = 0;
 
     xSemaphoreGive(audio_mutex);
 
@@ -285,8 +292,23 @@ static void audio_task(void* arg) {
             if (i2s_ret == ESP_OK) {
                 // Track samples for A/V sync (16-bit stereo = 4 bytes per sample)
                 samples_written += bytes_written / 4;
+            } else if (i2s_ret == ESP_ERR_TIMEOUT) {
+                // Suppress repeated timeout warnings - just count them
+                i2s_timeout_count++;
             } else {
                 ESP_LOGW(TAG, "I2S write error: %s", esp_err_to_name(i2s_ret));
+            }
+
+            // Log audio sync debug info every ~3 seconds (based on samples at 44.1kHz)
+            static uint64_t last_debug_samples = 0;
+            if (samples_written - last_debug_samples >= 44100 * 3) {
+                int64_t elapsed_us = esp_timer_get_time() - audio_start_time_us;
+                int64_t elapsed_ms = elapsed_us / 1000;
+                int64_t audio_pos_ms = (samples_written * 1000) / 44100;
+                int64_t drift_ms = audio_pos_ms - elapsed_ms;
+                ESP_LOGI(TAG, "Audio sync: elapsed=%lldms, audio_pos=%lldms, drift=%+lldms, timeouts=%lu",
+                         elapsed_ms, audio_pos_ms, drift_ms, (unsigned long)i2s_timeout_count);
+                last_debug_samples = samples_written;
             }
         } else if (ret != ESP_AUDIO_ERR_OK) {
             ESP_LOGW(TAG, "AAC decode error: %d (frame_size=%zu)", ret, frame_size);

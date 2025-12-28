@@ -10,9 +10,9 @@
 
 static const char* TAG = "video_decoder";
 
-// Frame dimensions (fixed for our videos - letterboxed on 800x480 display)
-#define FRAME_WIDTH  600
-#define FRAME_HEIGHT 480
+// Frame dimensions (half resolution, will be 2x upscaled during display)
+#define FRAME_WIDTH  300
+#define FRAME_HEIGHT 240
 
 // YUV420 buffer size: width * height * 1.5
 #define YUV_BUFFER_SIZE (FRAME_WIDTH * FRAME_HEIGHT * 3 / 2)
