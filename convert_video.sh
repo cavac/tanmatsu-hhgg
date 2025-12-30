@@ -1,12 +1,8 @@
 #!/bin/bash
 # Convert a video file for Tanmatsu ESP32-P4 video player
-# Creates interleaved AVI with MJPEG video + PCM audio
+# Creates interleaved AVI with MJPEG video + MP3 audio
 #
-# Usage: ./convert_video.sh <input.mp4> [display_name]
-#
-# Examples:
-#   ./convert_video.sh myvideo.mp4
-#   ./convert_video.sh myvideo.mp4 "My Cool Video"
+# Usage: ./convert_video.sh <input.mp4>
 #
 # Output: Single .avi file with interleaved video and audio
 
@@ -26,17 +22,14 @@ AUDIO_BITRATE=128k
 
 # Check arguments
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <input.mp4> [display_name]"
-    echo "  input.mp4    - Source video file"
-    echo "  display_name - Optional display name (defaults to filename)"
+    echo "Usage: $0 <input.mp4>"
     echo ""
-    echo "Output: Interleaved AVI (MJPEG ${WIDTH}x${HEIGHT} + PCM ${AUDIO_RATE}Hz stereo)"
+    echo "Output: Interleaved AVI (MJPEG ${WIDTH}x${HEIGHT} + MP3 ${AUDIO_RATE}Hz stereo)"
     exit 1
 fi
 
 INPUT="$1"
 BASE=$(basename "$INPUT" .mp4)
-DISPLAY_NAME="${2:-$BASE}"
 
 # Check input exists
 if [ ! -f "$INPUT" ]; then
@@ -48,7 +41,6 @@ fi
 mkdir -p "$OUTDIR"
 
 echo "Converting: $INPUT"
-echo "Display name: $DISPLAY_NAME"
 echo "Output: $OUTDIR/${BASE}.avi"
 
 # Get duration and FPS for display
