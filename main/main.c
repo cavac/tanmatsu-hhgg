@@ -237,7 +237,7 @@ static esp_err_t start_playback(video_entry_t* entry) {
 
     // Build video file path
     char video_path[128];
-    snprintf(video_path, sizeof(video_path), "/sd/at.cavac.hhgg/%s", entry->video_file);
+    snprintf(video_path, sizeof(video_path), "/sd/apps/at.cavac.hhgg/%s", entry->video_file);
 
     // Open AVI file for streaming (uses fastopen for optimal SD card performance)
     esp_err_t ret = avi_parser_open(&avi_parser, video_path);
@@ -603,7 +603,7 @@ void app_main(void) {
 
     // Play startup video before showing UI
     if (app_state != APP_STATE_ERROR) {
-        play_startup_video("/sd/at.cavac.hhgg/dontpanic.avi", fb_pixels, fb_stride, fb_height);
+        play_startup_video("/sd/apps/at.cavac.hhgg/dontpanic.avi", fb_pixels, fb_stride, fb_height);
     }
 
     // Load playlist
@@ -611,7 +611,7 @@ void app_main(void) {
         draw_loading_screen(fb_pixels, fb_stride, fb_height, "Loading...");
         blit();
 
-        res = playlist_load("/sd/at.cavac.hhgg/playlist.json", &playlist);
+        res = playlist_load("/sd/apps/at.cavac.hhgg/playlist.json", &playlist);
         if (res != ESP_OK || playlist.video_count == 0) {
             ESP_LOGE(TAG, "Failed to load playlist");
             app_state = APP_STATE_ERROR;
